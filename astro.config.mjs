@@ -11,8 +11,8 @@ const isStub = (path) => {
 };
 
 export default defineConfig({
-  // Ganti dengan domain Anda saat deploy (Netlify/Vercel/GitHub Pages).
-  site: 'https://example.com',
+  // URL produksi (Cloudflare Workers). Ganti bila memakai domain sendiri.
+  site: 'https://se-docs.imadegedeuditayanakusumaputra.workers.dev',
   integrations: [
     starlight({
       title: 'SE Knowledge Base',
