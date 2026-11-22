@@ -34,7 +34,7 @@ project/
 ## Setup (PowerShell)
 
 ```powershell
-$kb = 'D:\Dev\Projects\software-engineer-docs'; $p = 'D:\Dev\Projects\my-project'
+$kb = 'D:\projects\se-docs'; $p = 'D:\projects\my-project'
 New-Item -ItemType Directory -Force "$p\docs\agents\production","$p\docs\runbooks" | Out-Null
 Copy-Item "$kb\docs\agents\templates\production-ready\AGENTS.md" "$p\docs\agents\production\AGENTS.md"
 foreach ($d in 'devops','security','architecture','testing') {

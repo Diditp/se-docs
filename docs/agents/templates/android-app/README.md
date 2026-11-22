@@ -27,7 +27,7 @@ my-android-app/
 ## Setup (PowerShell)
 
 ```powershell
-$kb = 'D:\Dev\Projects\software-engineer-docs'; $p = 'D:\Dev\Projects\my-android-app'
+$kb = 'D:\projects\se-docs'; $p = 'D:\projects\my-android-app'
 Copy-Item "$kb\docs\agents\templates\android-app\AGENTS.md" "$p\AGENTS.md"
 New-Item -ItemType Directory -Force "$p\docs\agents\global" | Out-Null
 Copy-Item "$kb\AGENTS.md" "$p\docs\agents\global\AGENTS.md"

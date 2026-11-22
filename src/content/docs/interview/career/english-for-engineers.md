@@ -135,13 +135,13 @@ Chat (Slack/Teams):
 Hi Sarah, quick question about the invoice API: should the total include tax? Thanks!
 
 Email update:
-Subject: Xeloka POS – sync fix released
+Subject: POS app – sync fix released
 
 Hi team,
 The sync issue from last week is fixed in version 1.5.2. Duplicate sales no longer appear
 after reconnecting. Please let me know if you still see the problem.
 Best regards,
-Didit
+[Your name]
 
 Pull request:
 ## What

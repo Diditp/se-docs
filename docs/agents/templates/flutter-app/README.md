@@ -31,8 +31,8 @@ my_app/
 ## Setup (PowerShell)
 
 ```powershell
-$kb = 'D:\Dev\Projects\software-engineer-docs'   # path to this knowledge base
-$p  = 'D:\Dev\Projects\my_app'                   # your project
+$kb = 'D:\projects\se-docs'   # path to this knowledge base
+$p  = 'D:\projects\my_app'                   # your project
 Copy-Item "$kb\docs\agents\templates\flutter-app\AGENTS.md" "$p\AGENTS.md"
 New-Item -ItemType Directory -Force "$p\docs\agents\global" | Out-Null
 Copy-Item "$kb\AGENTS.md" "$p\docs\agents\global\AGENTS.md"
@@ -48,7 +48,7 @@ Copy-Item "$kb\docs\agents\shims\copilot-instructions.md" "$p\.github\copilot-in
 ## Setup (bash)
 
 ```bash
-KB=~/software-engineer-docs; P=~/projects/my_app
+KB=~/se-docs; P=~/projects/my_app
 cp "$KB/docs/agents/templates/flutter-app/AGENTS.md" "$P/AGENTS.md"
 mkdir -p "$P/docs/agents/global" && cp "$KB/AGENTS.md" "$P/docs/agents/global/AGENTS.md"
 for d in flutter security testing architecture; do mkdir -p "$P/docs/agents/$d"; cp "$KB/docs/agents/$d/AGENTS.md" "$P/docs/agents/$d/"; done

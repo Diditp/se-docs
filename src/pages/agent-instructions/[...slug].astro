@@ -19,7 +19,7 @@ if (doc) {
   const copyable = doc.files.filter((f) => !f.target.startsWith('('));
   const dirs = [...new Set(copyable.map((f) => f.target.split('/').slice(0, -1).join('/')).filter(Boolean))];
   setup = [
-    "$kb = 'D:\\Dev\\Projects\\software-engineer-docs'   # lokasi knowledge base ini",
+    "$kb = 'D:\\projects\\se-docs'   # lokasi knowledge base ini",
     "$p  = 'D:\\Dev\\Projects\\<nama-project>'            # project Anda",
     ...dirs.map((d) => `New-Item -ItemType Directory -Force "$p\\${toWin(d)}" | Out-Null`),
     ...copyable.map((f) => `Copy-Item "$kb\\${toWin(f.path)}" "$p\\${toWin(f.target)}"`),

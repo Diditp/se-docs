@@ -28,7 +28,7 @@ my-api/
 ## Setup (PowerShell)
 
 ```powershell
-$kb = 'D:\Dev\Projects\software-engineer-docs'; $p = 'D:\Dev\Projects\my-api'
+$kb = 'D:\projects\se-docs'; $p = 'D:\projects\my-api'
 Copy-Item "$kb\docs\agents\templates\nodejs-backend\AGENTS.md" "$p\AGENTS.md"
 New-Item -ItemType Directory -Force "$p\docs\agents\global","$p\db" | Out-Null
 Copy-Item "$kb\AGENTS.md" "$p\docs\agents\global\AGENTS.md"

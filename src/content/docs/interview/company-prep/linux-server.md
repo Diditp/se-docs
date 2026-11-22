@@ -130,7 +130,7 @@ journalctl -u pos-api -f --since "10 min ago"
 ### SSH aman
 
 ```bash
-ssh-keygen -t ed25519 -C "raven@laptop"
+ssh-keygen -t ed25519 -C "you@laptop"
 ssh-copy-id app@203.0.113.10
 ssh app@203.0.113.10
 ```

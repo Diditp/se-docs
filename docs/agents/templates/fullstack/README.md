@@ -30,7 +30,7 @@ product/
 ## Setup (PowerShell)
 
 ```powershell
-$kb = 'D:\Dev\Projects\software-engineer-docs'; $p = 'D:\Dev\Projects\product'
+$kb = 'D:\projects\se-docs'; $p = 'D:\projects\product'
 $t  = "$kb\docs\agents\templates"
 New-Item -ItemType Directory -Force "$p\mobile","$p\backend\db","$p\docs\agents\global","$p\.github" | Out-Null
 Copy-Item "$t\fullstack\AGENTS.md"      "$p\AGENTS.md"

@@ -142,7 +142,7 @@ dmesg | grep -i "killed process"       # proses dibunuh OOM killer
 ### SSH
 
 ```bash
-ssh-keygen -t ed25519 -C "raven@laptop"            # kunci baru (dengan passphrase)
+ssh-keygen -t ed25519 -C "you@laptop"            # kunci baru (dengan passphrase)
 ssh-copy-id deploy@server
 ssh -i ~/.ssh/id_ed25519 deploy@server
 scp dist.tar.gz deploy@server:/tmp/

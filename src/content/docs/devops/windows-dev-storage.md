@@ -225,7 +225,7 @@ Setelah semua normal, hapus folder `*.bak-<tanggal>` di C:.
 masih di C:, padahal datanya di D:. Berguna untuk tool tanpa environment variable.
 
 ```text
-C:\Users\raven\AppData\Local\.dartServer  ──junction──►  D:\DevCache\dart-server
+C:\Users\<nama>\AppData\Local\.dartServer  ──junction──►  D:\DevCache\dart-server
 ```
 
 Contoh untuk cache Dart analysis server (tutup VS Code/Android Studio dulu):
