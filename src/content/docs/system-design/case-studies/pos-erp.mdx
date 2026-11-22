@@ -1,0 +1,209 @@
+---
+title: "POS / ERP Application"
+description: "Studi kasus desain sistem Point of Sale multi-outlet yang offline-first: requirement, estimasi, data model, sinkronisasi, stok berbasis ledger, pembayaran, laporan, dan failure mode."
+level: advanced
+status: complete
+updated: 2026-11-07
+tags: [system-design, case-study, pos, erp, offline-first, inventory]
+---
+
+import Mermaid from '@components/Mermaid.astro';
+
+## Overview
+
+Sistem **Point of Sale (POS)** multi-outlet untuk bisnis F&B/retail: kasir menggunakan aplikasi Flutter di tablet/HP
+Android, owner memantau penjualan dan stok dari dashboard, dan data terhubung ke modul ERP sederhana (inventory,
+pembelian, laporan keuangan). Studi kasus ini sangat dekat dengan pengalaman Anda — jadikan **cerita utama** di interview.
+
+## Why It Matters
+
+POS memadukan hampir semua topik penting: **offline-first**, **transaksi & konsistensi** (stok, uang), **sinkronisasi
+multi-device**, **integrasi pembayaran**, **laporan agregasi**, **RBAC & audit**, dan **perangkat keras** (printer,
+scanner). Kesalahan desain langsung berdampak ke uang: transaksi ganda, stok minus, atau kasir tidak bisa berjualan saat
+internet putus.
+
+## Core Concepts
+
+**Functional requirements**
+
+- Kasir: buka/tutup shift, buat transaksi (produk, varian, modifier, diskon), multi-payment (tunai, QRIS, EDC), cetak struk, void/refund dengan izin supervisor.
+- Owner/manager: kelola produk & harga per outlet, stok & transfer antar outlet, laporan penjualan/shift/produk, user & role.
+- Inventory: stok per outlet, resep/BOM (opsional untuk F&B), stock opname, pembelian dari supplier.
+
+**Non-functional requirements**
+
+- **Transaksi tetap bisa dibuat saat offline** hingga beberapa hari.
+- **Tidak ada transaksi ganda**; data akhirnya konsisten di server (eventual consistency) dalam hitungan menit setelah online.
+- Membuat transaksi di device **< 200 ms**; laporan harian tersedia < 5 menit setelah sync.
+- Ketersediaan API 99.9%; RPO ≤ 5 menit, RTO ≤ 1 jam untuk server.
+- Audit trail untuk aksi sensitif; data pembayaran tidak menyimpan data kartu (PCI scope minimal).
+
+**Estimasi** (lihat [System Design Fundamentals](/system-design/concepts/fundamentals/)): 2.000 outlet × 300 trx/hari =
+600 ribu trx/hari, puncak ~60 tps, ~440 GB/tahun → **satu cluster PostgreSQL dengan replika** memadai; tantangannya
+konsistensi & sync, bukan throughput.
+
+## How It Works
+
+<Mermaid code={`flowchart TB
+  subgraph Outlet
+    POS1[POS Flutter + SQLite/Drift<br/>outbox + sync worker]
+    PR[Printer / Scanner / EDC]
+    POS1 --- PR
+  end
+  POS1 -- HTTPS push/pull --> GW[API Gateway<br/>auth, rate limit]
+  GW --> API[POS API - modular monolith<br/>sales, catalog, inventory, auth]
+  API --> DB[(PostgreSQL primary)]
+  DB --> RR[(Read replica)]
+  API -- outbox events --> Q[[Queue]]
+  Q --> RW[Report worker<br/>agregasi harian]
+  Q --> NW[Notification worker]
+  RW --> DB
+  PG[Payment Gateway QRIS] -- webhook signed --> API
+  DASH[Owner Dashboard Web] --> GW
+  DASH -. laporan .-> RR`} caption="Arsitektur POS multi-outlet offline-first" />
+
+### Data model inti
+
+```sql
+outlets(id, name, timezone)
+users(id, name, role)                       user_outlets(user_id, outlet_id)
+products(id, sku, name, category_id, ...)   outlet_prices(outlet_id, product_id, price, updated_at)
+shifts(id, outlet_id, cashier_id, opened_at, closed_at, opening_cash, closing_cash)
+orders(id UUID, outlet_id, shift_id, cashier_id, device_id, status, subtotal, discount, tax, total,
+       created_at_device, received_at_server, voided_by, void_reason)
+order_items(id, order_id, product_id, qty, unit_price, discount)      -- harga disnapshot saat transaksi
+payments(id, order_id, method, amount, reference, status)
+stock_movements(id, outlet_id, product_id, delta, reason, ref_type, ref_id, created_at)  -- ledger
+stock_balances(outlet_id, product_id, qty)  -- proyeksi dari ledger untuk baca cepat
+audit_logs(id, actor_id, action, entity, entity_id, data, created_at)
+```
+
+## Implementation
+
+### 1. Membuat transaksi (device, offline)
+
+1. Kasir checkout → use case `CreateOrder` validasi lokal (stok lokal, diskon sesuai aturan).
+2. **Satu transaksi Drift**: insert `orders` (UUID v7), `order_items`, `payments`, `stock_movements` lokal, dan `outbox`.
+3. Cetak struk lokal (ESC/POS via Bluetooth/USB) — **tidak menunggu server**.
+4. Sync worker mendorong outbox saat online. Detail di [Offline-First Application](/flutter/offline-first/).
+
+### 2. Menerima transaksi (server, idempotent)
+
+```sql
+BEGIN;
+INSERT INTO orders (id, outlet_id, shift_id, cashier_id, device_id, status, total, created_at_device, received_at_server)
+VALUES ($1, $2, $3, $4, $5, 'PAID', $6, $7, now())
+ON CONFLICT (id) DO NOTHING
+RETURNING id;                                  -- tidak ada baris → duplikat → kembalikan 200 dengan data lama
+-- jika baru: insert items, payments, stock_movements (delta negatif), update stock_balances, insert outbox_event
+COMMIT;
+```
+
+Server **menghitung ulang total** dari harga yang berlaku pada `created_at_device` (dengan toleransi) dan menandai
+selisih untuk ditinjau, bukan menolak transaksi yang sudah terjadi di dunia nyata.
+
+### 3. Stok sebagai ledger
+
+Stok tidak disinkronkan sebagai angka akhir (`qty = 7`) karena dua device offline akan saling menimpa. Setiap perubahan
+adalah **pergerakan** (`-2 SALE`, `+24 PURCHASE`, `-1 WASTE`, `+3 OPNAME_ADJ`). Saldo = jumlah semua pergerakan.
+
+- Device menampilkan stok lokal (perkiraan) dan menerima saldo resmi saat pull.
+- **Stok minus diizinkan sementara** untuk transaksi offline (barang fisik memang terjual) dan dimunculkan sebagai alert untuk opname — keputusan bisnis yang harus didiskusikan.
+
+### 4. Pembayaran QRIS
+
+```text
+POS ── POST /payments/qris {order_id, amount} (Idempotency-Key) ──► API ──► Payment Gateway (create QR)
+POS ◄─ QR string + payment_id ── tampilkan QR, polling status / push
+PG ── webhook (HMAC signed) ──► API: verifikasi signature → update payment PAID (idempotent) → notify POS
+Rekonsiliasi harian: settlement report PG ⟷ payments (FULL OUTER JOIN) → selisih ke dashboard finance
+```
+
+QRIS membutuhkan koneksi; saat offline, metode non-tunai yang butuh online dinonaktifkan di UI.
+
+### 5. Laporan
+
+- Worker mengonsumsi event `OrderCreated` dan memperbarui tabel agregat `daily_sales(outlet_id, date, product_id, qty, revenue)` — **idempotent per order_id**.
+- Dashboard membaca agregat/replica, bukan menjumlah jutaan baris on-the-fly.
+- Tanggal laporan memakai **timezone outlet** dan waktu transaksi device, dengan `received_at_server` untuk audit.
+
+## Best Practices
+
+- **ID dari client (UUID v7)** + **server idempotent** + **outbox** — fondasi semua sync yang aman.
+- **Snapshot harga & nama produk** di `order_items` — laporan historis tidak berubah saat harga master diubah.
+- **Ledger untuk stok dan kas shift**; saldo adalah proyeksi.
+- **Modular monolith** dengan modul jelas (sales, catalog, inventory, auth, reporting) — cukup untuk skala ini, mudah dipecah nanti.
+- **RBAC + scope outlet**; void/refund butuh supervisor (PIN/approval) dan tercatat di audit log.
+- **Feature flag & versi API** — device di outlet sering terlambat update.
+- **Observability per outlet/device**: lag sync, jumlah outbox pending, versi app, error rate.
+
+## Anti-Patterns
+
+- POS yang **wajib online** untuk membuat transaksi.
+- **Auto-increment server** sebagai nomor transaksi tunggal → konflik saat offline. (Nomor struk yang manusiawi bisa dibuat per device: `OUTLET-DEVICE-YYYYMMDD-SEQ`.)
+- **Overwrite stok** dari device (last-write-wins).
+- Laporan langsung dari tabel transaksi primary saat jam sibuk.
+- Menyimpan nomor kartu/CVV — gunakan EDC/payment gateway agar data kartu tidak pernah menyentuh sistem Anda.
+
+## Performance Considerations
+
+- Device: index lokal pada `created_at`, `synced`; pagination riwayat; parsing katalog besar di isolate.
+- Server: partisi `orders`/`order_items`/`stock_movements` per bulan; index `(outlet_id, created_at)`; agregasi async.
+- Sync pull memakai cursor + ETag; katalog dikirim delta, bukan full setiap kali.
+- Batching push (mis. 50 transaksi per request) saat backlog besar setelah offline lama.
+
+## Security Considerations
+
+- Login kasir cepat (PIN) **di atas** sesi device yang terdaftar (device binding); device bisa dicabut dari dashboard (remote logout + wipe flag).
+- Database lokal terenkripsi; token di secure storage.
+- Webhook pembayaran diverifikasi signature + allowlist IP bila tersedia; idempotent.
+- Audit log append-only untuk void, refund, diskon manual, perubahan harga, buka laci kas.
+- Validasi diskon & harga di server; anomali (void berlebihan per kasir) dimunculkan sebagai alert anti-fraud.
+
+## Real-World Use Cases
+
+- Jaringan kedai kopi 200 outlet dengan koneksi tidak stabil di mall & ruko.
+- Retail minimarket dengan barcode scanner dan stok ribuan SKU.
+- Sistem kasir unit layanan pelanggan yang menerima pembayaran dan mencetak bukti — pola yang sama (transaksi, shift, rekonsiliasi).
+
+## Interview Questions
+
+1. **(Intermediate)** Bagaimana POS tetap berjalan saat internet mati?
+2. **(Intermediate)** Bagaimana mencegah transaksi ganda saat sync di-retry?
+3. **(Advanced)** Bagaimana menjaga stok konsisten jika beberapa device offline menjual barang yang sama?
+4. **(Advanced)** Bagaimana mendesain laporan penjualan yang cepat untuk ribuan outlet?
+5. **(Advanced)** Bagaimana menangani perubahan harga saat device sedang offline?
+6. **(Advanced)** Apa failure mode terbesar sistem ini dan mitigasinya?
+
+## Sample Answers
+
+1. Database lokal (Drift/SQLite) sebagai source of truth untuk UI; transaksi, stok lokal, dan struk diproses lokal; perubahan dicatat di outbox dalam transaksi yang sama, lalu sync worker mengirimnya saat online. Fitur yang wajib online (QRIS) dinonaktifkan dengan jelas.
+2. UUID transaksi dibuat di device dan dipakai sebagai primary key/idempotency key; server melakukan `INSERT ... ON CONFLICT DO NOTHING` dan mengembalikan hasil yang sama untuk request ulang.
+3. Stok dimodelkan sebagai ledger pergerakan, bukan angka yang ditimpa; server menjumlahkan semua pergerakan dari semua device sehingga tidak ada penjualan yang hilang. Stok minus akibat offline dimunculkan sebagai alert untuk opname — keputusan bisnis, bukan error teknis.
+4. Agregasi inkremental berbasis event ke tabel ringkasan per outlet/hari/produk (idempotent per order), dibaca dari replica; data mentah dipartisi per bulan; laporan rentang panjang memakai agregat bulanan.
+5. Harga baru di-pull saat online; transaksi offline memakai harga lokal yang berlaku saat itu dan disimpan sebagai snapshot. Server menerima transaksi tersebut dengan mencatat versi harga yang dipakai; selisih signifikan ditandai untuk review.
+6. Device offline lama dengan backlog besar & app versi lama → batching, kompatibilitas API, monitoring lag per device. Payment gateway/webhook gagal → polling status + rekonsiliasi harian. DB primary down → replika + failover, transaksi tetap tertampung di device. Data lokal rusak/hilang sebelum sync → backup lokal terenkripsi & sync sesering mungkin.
+
+## Practical Exercises
+
+1. Gambar sequence diagram lengkap: transaksi offline → online → laporan.
+2. Implementasikan endpoint `POST /v1/sync/push` idempotent dan uji dengan payload duplikat.
+3. Modelkan stok sebagai ledger di PostgreSQL dan buat view/materialized view saldo per outlet.
+4. Tulis rencana rekonsiliasi pembayaran QRIS harian (query FULL OUTER JOIN).
+5. Presentasikan desain ini dalam 15 menit seolah interview — rekam dan evaluasi.
+
+## Quick Reference
+
+- Device: Drift + **outbox** + UUID v7 + sync worker; struk lokal.
+- Server: **idempotent insert**, hitung ulang harga, ledger stok, audit log.
+- Pembayaran: idempotency key, webhook signed, **rekonsiliasi harian**.
+- Laporan: agregasi async + replica + partisi per bulan + timezone outlet.
+- Keamanan: device binding, DB lokal terenkripsi, RBAC + scope outlet, tidak menyimpan data kartu.
+
+## Related Topics
+
+- [Offline-First Application](/flutter/offline-first/)
+- [Transactions & ACID](/database/transactions-acid/)
+- [Inventory Management](/system-design/case-studies/inventory-management/)
+- [Design an Offline-First POS Application (Interview)](/interview/system-design/offline-first-pos/)
+- [Authentication & Authorization](/backend/authentication-authorization/)

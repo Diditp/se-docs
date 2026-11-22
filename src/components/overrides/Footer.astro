@@ -1,0 +1,76 @@
+---
+// Override Footer: Quick Notes per halaman + self-assessment, lalu footer default Starlight.
+import Default from '@astrojs/starlight/components/Footer.astro';
+
+const data = Astro.locals.starlightRoute.entry.data as { trackable?: boolean };
+const id = Astro.locals.starlightRoute.entry.id;
+const show = data.trackable !== false && id !== 'index';
+---
+
+{show && (
+  <section class="notes not-content" data-notes>
+    <div class="head">
+      <h2>Catatan Pribadi</h2>
+      <span class="saved" data-saved aria-live="polite"></span>
+    </div>
+    <textarea data-note rows="4" placeholder="Tulis ringkasan dengan kata-kata sendiri, gotcha dari project nyata, atau pertanyaan yang belum terjawab… (tersimpan otomatis di browser ini)"></textarea>
+    <div class="assess">
+      <span>Seberapa paham materi ini?</span>
+      <button type="button" data-rate="good">Paham, bisa menjelaskan</button>
+      <button type="button" data-rate="again">Perlu diulang</button>
+    </div>
+  </section>
+)}
+
+<Default />
+
+<script>
+  import { load, update, slugFromPath, logActivity } from '../../scripts/store';
+
+  const box = document.querySelector<HTMLElement>('[data-notes]');
+  if (box) {
+    const slug = slugFromPath();
+    const ta = box.querySelector<HTMLTextAreaElement>('[data-note]')!;
+    const saved = box.querySelector<HTMLElement>('[data-saved]')!;
+    ta.value = load().notes[slug]?.text ?? '';
+    let t: number | undefined;
+    ta.addEventListener('input', () => {
+      clearTimeout(t);
+      saved.textContent = 'Menyimpan…';
+      t = window.setTimeout(() => {
+        update((d) => {
+          const text = ta.value.trim();
+          if (text) d.notes[slug] = { text: ta.value, ts: Date.now() };
+          else delete d.notes[slug];
+        });
+        saved.textContent = 'Tersimpan';
+      }, 500);
+    });
+    box.addEventListener('click', (e) => {
+      const b = (e.target as HTMLElement).closest<HTMLButtonElement>('[data-rate]');
+      if (!b) return;
+      update((d) => {
+        logActivity(d);
+        if (b.dataset.rate === 'good') {
+          d.learned[slug] = d.learned[slug] ?? Date.now();
+          delete d.weak[slug];
+        } else {
+          d.weak[slug] = (d.weak[slug] ?? 0) + 1;
+        }
+      });
+      saved.textContent = b.dataset.rate === 'good' ? 'Ditandai paham ✓ (cek tombol di atas)' : 'Masuk daftar topik lemah — akan muncul di Review';
+    });
+  }
+</script>
+
+<style>
+  .notes { margin-top: 3rem; padding: 1rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.75rem; background: var(--sl-color-gray-7, var(--sl-color-black)); }
+  .head { display: flex; justify-content: space-between; align-items: baseline; gap: 1rem; }
+  h2 { font-size: var(--sl-text-lg); margin: 0 0 0.5rem; color: var(--sl-color-white); }
+  .saved { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  textarea { width: 100%; box-sizing: border-box; font: inherit; font-size: var(--sl-text-sm); padding: 0.6rem; border-radius: 0.5rem; border: 1px solid var(--sl-color-gray-5); background: var(--sl-color-bg); color: var(--sl-color-text); resize: vertical; }
+  .assess { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; margin-top: 0.75rem; font-size: var(--sl-text-sm); color: var(--sl-color-gray-2); }
+  .assess span { margin-inline-end: 0.25rem; }
+  .assess button { font: inherit; cursor: pointer; padding: 0.3rem 0.7rem; border-radius: 0.5rem; border: 1px solid var(--sl-color-gray-5); background: transparent; color: var(--sl-color-gray-2); }
+  .assess button:hover { border-color: var(--sl-color-accent); color: var(--sl-color-white); }
+</style>

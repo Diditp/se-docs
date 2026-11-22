@@ -1,0 +1,53 @@
+---
+import { allTopics } from '../data/catalog.mjs';
+const titles = Object.fromEntries(allTopics().map((t) => [t.slug, t.title]));
+---
+
+<div class="bk not-content" data-bk data-titles={JSON.stringify(titles)}>
+  <h2>Bookmarks</h2>
+  <ul data-l="bm"></ul>
+  <h2>Catatan Pribadi</h2>
+  <div data-l="notes"></div>
+</div>
+
+<script>
+  import { load, update, escapeHtml as esc } from '../scripts/store';
+  const el = document.querySelector<HTMLElement>('[data-bk]')!;
+  const titles: Record<string, string> = JSON.parse(el.dataset.titles!);
+  const fmt = (t: number) => new Date(t).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+
+  function render() {
+    const d = load();
+    const bm = Object.entries(d.bookmarks).sort((a, b) => b[1].ts - a[1].ts);
+    el.querySelector('[data-l=bm]')!.innerHTML = bm.length
+      ? bm.map(([s, b]) => `<li><a href="/${esc(s)}/">${esc(b.title)}</a><span>${fmt(b.ts)}</span><button type="button" data-rm="${esc(s)}" aria-label="Hapus bookmark">✕</button></li>`).join('')
+      : '<li class="empty">Belum ada bookmark. Gunakan tombol ☆ Bookmark di halaman materi.</li>';
+    const notes = Object.entries(d.notes).sort((a, b) => b[1].ts - a[1].ts);
+    el.querySelector('[data-l=notes]')!.innerHTML = notes.length
+      ? notes.map(([s, n]) => `<article><header><a href="/${esc(s)}/">${esc(titles[s] ?? s)}</a><span>${fmt(n.ts)}</span></header><p>${esc(n.text).replace(/\n/g, '<br>')}</p></article>`).join('')
+      : '<p class="empty">Belum ada catatan. Kolom "Catatan Pribadi" ada di bagian bawah setiap halaman materi.</p>';
+  }
+  el.addEventListener('click', (e) => {
+    const b = (e.target as HTMLElement).closest<HTMLElement>('[data-rm]');
+    if (!b) return;
+    update((d) => { delete d.bookmarks[b.dataset.rm!]; });
+    render();
+  });
+  render();
+</script>
+
+<style>
+  h2 { font-size: var(--sl-text-h4); color: var(--sl-color-white); margin: 1.5rem 0 0.75rem; }
+  ul { list-style: none; padding: 0; margin: 0; border: 1px solid var(--sl-color-gray-5); border-radius: 0.6rem; }
+  ul :global(li) { display: flex; gap: 0.75rem; align-items: center; padding: 0.55rem 0.8rem; font-size: var(--sl-text-sm); }
+  ul :global(li + li) { border-top: 1px solid var(--sl-color-gray-6); }
+  ul :global(a) { flex: 1; color: var(--sl-color-white); }
+  ul :global(span) { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  ul :global(button) { cursor: pointer; background: none; border: 0; color: var(--sl-color-gray-3); }
+  ul :global(button:hover) { color: var(--sl-color-red-high); }
+  :global(.bk article) { border: 1px solid var(--sl-color-gray-5); border-radius: 0.6rem; padding: 0.75rem 1rem; margin-bottom: 0.75rem; }
+  :global(.bk article header) { display: flex; justify-content: space-between; font-size: var(--sl-text-sm); }
+  :global(.bk article header span) { color: var(--sl-color-gray-3); font-size: var(--sl-text-xs); }
+  :global(.bk article p) { font-size: var(--sl-text-sm); color: var(--sl-color-gray-2); margin: 0.5rem 0 0; }
+  :global(.bk .empty) { color: var(--sl-color-gray-3); font-size: var(--sl-text-sm); }
+</style>

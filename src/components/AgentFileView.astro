@@ -1,0 +1,78 @@
+---
+// Menampilkan satu file instruksi agent: tombol Copy & Download, tab "Tampilan" (rendered) dan "Markdown" (highlighted).
+import { Tabs, TabItem, Code } from '@astrojs/starlight/components';
+import { Marked } from 'marked';
+import { agentFile, downloadUrl } from '../data/agent-files';
+
+interface Props { path: string; label: string; target: string; id: string }
+const { path, label, target, id } = Astro.props;
+const content = agentFile(path);
+const fileName = path.split('/').pop()!;
+
+// Heading di dalam file diturunkan 2 level (h1 → h3) agar tidak bentrok dengan struktur halaman.
+const marked = new Marked({
+  renderer: {
+    heading({ tokens, depth }) {
+      const level = Math.min(depth + 2, 6);
+      return `<h${level}>${this.parser.parseInline(tokens)}</h${level}>\n`;
+    },
+  },
+});
+const html = await marked.parse(content);
+const lines = content.split('\n').length;
+---
+
+<div class="afv not-content" data-afv>
+  <div class="bar">
+    <div class="meta">
+      <code class="name">{label}</code>
+      <span class="info">{lines} baris · simpan di project sebagai <code>{target}</code></span>
+    </div>
+    <div class="btns">
+      <button type="button" data-copy aria-label={`Copy Markdown ${label}`}>Copy Markdown</button>
+      <a href={downloadUrl(path)} download={fileName}>Download .md</a>
+    </div>
+  </div>
+  <textarea hidden data-raw>{content}</textarea>
+</div>
+
+<Tabs syncKey="agent-view">
+  <TabItem label="Tampilan">
+    <div class="rendered" set:html={html} />
+  </TabItem>
+  <TabItem label="Markdown">
+    <Code code={content} lang="md" title={target} wrap />
+  </TabItem>
+</Tabs>
+
+<script>
+  document.querySelectorAll<HTMLElement>('[data-afv]').forEach((el) => {
+    const btn = el.querySelector<HTMLButtonElement>('[data-copy]')!;
+    const raw = el.querySelector<HTMLTextAreaElement>('[data-raw]')!;
+    btn.addEventListener('click', async () => {
+      const text = raw.value;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch {
+        raw.hidden = false; raw.select(); document.execCommand('copy'); raw.hidden = true;
+      }
+      const old = btn.textContent;
+      btn.textContent = 'Tersalin ✓';
+      setTimeout(() => (btn.textContent = old), 1800);
+    });
+  });
+</script>
+
+<style>
+  .afv { margin: 1rem 0 0.5rem; }
+  .bar { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0.75rem; padding: 0.75rem 1rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.6rem; background: var(--sl-color-bg-nav); }
+  .meta { display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
+  .name { font-weight: 600; color: var(--sl-color-white); background: none; padding: 0; }
+  .info { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  .info code { font-size: 0.95em; }
+  .btns { display: flex; gap: 0.5rem; flex-wrap: wrap; }
+  .btns button, .btns a { font: inherit; font-size: var(--sl-text-sm); cursor: pointer; padding: 0.35rem 0.8rem; border-radius: 0.5rem; border: 1px solid var(--sl-color-gray-5); background: transparent; color: var(--sl-color-gray-1); text-decoration: none; }
+  .btns button { background: var(--sl-color-accent); border-color: var(--sl-color-accent); color: var(--sl-color-black); font-weight: 600; }
+  .btns a:hover, .btns button:hover { border-color: var(--sl-color-accent-high); }
+  .rendered { max-height: 70vh; overflow: auto; padding: 0 1rem 1rem; border: 1px solid var(--sl-color-gray-6); border-radius: 0.6rem; }
+</style>

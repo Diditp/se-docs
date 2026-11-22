@@ -1,0 +1,25 @@
+{
+  "name": "software-engineer-docs",
+  "version": "1.0.0",
+  "scripts": {
+    "predev": "node scripts/generate-stubs.mjs",
+    "dev": "astro dev",
+    "prebuild": "node scripts/generate-stubs.mjs",
+    "build": "astro build",
+    "preview": "astro preview",
+    "stubs": "node scripts/generate-stubs.mjs",
+    "check": "node scripts/check-content.mjs"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "^0.42.10",
+    "astro": "^7.4.7",
+    "fflate": "^0.8.3",
+    "marked": "^18.2.0",
+    "mermaid": "^11.17.2"
+  },
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  }
+}

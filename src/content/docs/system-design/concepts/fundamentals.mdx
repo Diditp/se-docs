@@ -1,0 +1,201 @@
+---
+title: "System Design Fundamentals"
+description: "Building block sistem skala besar — client, load balancer, service stateless, database, cache, queue, CDN — plus estimasi kapasitas, CAP/PACELC, dan cara berpikir trade-off."
+level: beginner
+status: complete
+updated: 2026-11-07
+tags: [system-design, scalability, architecture, cap, estimation]
+---
+
+import Mermaid from '@components/Mermaid.astro';
+
+## Overview
+
+**System design** adalah proses menentukan **komponen, interaksi, data, dan trade-off** sebuah sistem agar memenuhi
+kebutuhan fungsional (fitur) dan non-fungsional (skala, latency, ketersediaan, keamanan, biaya). Tidak ada satu jawaban
+benar — yang dinilai adalah **alasan** di balik setiap keputusan.
+
+## Why It Matters
+
+- Aplikasi mobile Anda hanya sebaik backend dan arsitektur di belakangnya: timeout, data tidak konsisten, dan downtime sering berakar dari desain.
+- Posisi Software Engineer (termasuk di perusahaan infrastruktur & layanan digital besar) menuntut pemahaman end-to-end, bukan hanya satu layer.
+- Interview system design menguji kemampuan **mengurai masalah ambigu, mengestimasi, dan berkomunikasi**.
+
+## Core Concepts
+
+| Konsep | Arti singkat |
+| --- | --- |
+| **Latency vs throughput** | Waktu satu request vs jumlah request per detik |
+| **Scalability** | Kemampuan menangani beban bertambah (vertical: mesin lebih besar; horizontal: lebih banyak mesin) |
+| **Availability** | Persentase waktu sistem dapat dipakai (99.9% ≈ 8,76 jam downtime/tahun) |
+| **Reliability** | Sistem bekerja **benar** secara konsisten (tidak hanya "hidup") |
+| **Consistency** | Semua pembaca melihat data terbaru (strong) atau akhirnya sama (eventual) |
+| **Stateless service** | Server tidak menyimpan state sesi lokal → mudah di-scale horizontal |
+| **SPOF** | Single point of failure — komponen yang jika mati, sistem ikut mati |
+| **Percentile (p50/p95/p99)** | Ukuran latency yang jujur; rata-rata menyembunyikan ekor lambat |
+
+**CAP theorem:** saat terjadi **network Partition**, sistem terdistribusi harus memilih **Consistency** (tolak/tunda
+request) atau **Availability** (layani dengan data yang mungkin stale). **PACELC** menambahkan: *Else* (tanpa partisi)
+tetap ada trade-off **Latency vs Consistency**.
+
+### Building blocks
+
+| Komponen | Fungsi | Contoh |
+| --- | --- | --- |
+| DNS + CDN | Arahkan user, sajikan aset statis dekat user | Cloudflare, CloudFront |
+| Load balancer | Bagi trafik, health check, TLS termination | Nginx, HAProxy, ALB |
+| API gateway | Auth, rate limit, routing, aggregation | Kong, cloud API gateway |
+| Application service | Logika bisnis, stateless | Node.js, NestJS, Spring |
+| Relational DB | Data transaksional, konsistensi kuat | PostgreSQL, MySQL |
+| Cache | Percepat baca, kurangi beban DB | Redis |
+| Message queue / stream | Decoupling, async, buffering | RabbitMQ, Kafka, BullMQ |
+| Object storage | File/gambar/backup | S3, GCS, MinIO |
+| Search | Full-text, faceting | Elasticsearch/OpenSearch |
+| Observability | Log, metrik, tracing, alert | Prometheus, Grafana, OpenTelemetry |
+
+## How It Works
+
+<Mermaid code={`flowchart LR
+  U[Mobile / Web Client] --> CDN[CDN - aset statis]
+  U --> LB[Load Balancer]
+  LB --> A1[API instance 1]
+  LB --> A2[API instance 2]
+  LB --> A3[API instance N]
+  A1 & A2 & A3 --> R[(Redis cache)]
+  A1 & A2 & A3 --> P[(PostgreSQL primary)]
+  P -- replikasi --> RR[(Read replica)]
+  A1 & A2 & A3 -- publish job --> Q[[Message Queue]]
+  Q --> W[Worker: notifikasi, laporan, sync]
+  W --> S3[(Object Storage)]
+  A1 & A2 & A3 -.-> O[Logs / Metrics / Traces]`} caption="Arsitektur web/mobile backend tipikal yang dapat di-scale horizontal" />
+
+Alur baca: client → LB → API → cache (hit? kembalikan) → DB (replica untuk laporan) → isi cache.
+Alur tulis: client → LB → API → DB primary (transaksi) → publish event/job → worker melakukan efek samping (notifikasi, indexing).
+
+### Estimasi kapasitas (back-of-the-envelope)
+
+Contoh: POS untuk **2.000 outlet**, rata-rata **300 transaksi/outlet/hari**, jam sibuk 4× rata-rata.
+
+```text
+Transaksi/hari   = 2.000 × 300               = 600.000
+Rata-rata TPS    = 600.000 / 86.400          ≈ 7 tps
+Puncak           ≈ 7 × 4 (jam sibuk) × 2 (lonjakan)   ≈ 56 tps   → satu PostgreSQL cukup, fokus HA & index
+Ukuran/transaksi ≈ 2 KB (order + items)      → 1,2 GB/hari ≈ 440 GB/tahun → partisi by bulan, arsip data lama
+Sync request     = setiap device sync 1×/menit × 4.000 device ≈ 67 rps baca ringan → cache/ETag/cursor
+```
+
+Kesimpulan estimasi menentukan desain: bottleneck bukan throughput, melainkan **ketersediaan saat offline, konsistensi
+stok, dan pertumbuhan data**.
+
+## Implementation
+
+Kerangka 6 langkah yang bisa dipakai untuk desain nyata maupun interview:
+
+1. **Requirement** — fitur inti (3–5), aktor, NFR terukur (latency p95, availability, RPO/RTO, retensi data, kepatuhan).
+2. **Estimasi** — user, request/detik (rata-rata & puncak), rasio baca:tulis, storage, bandwidth.
+3. **API & data model** — endpoint utama, entitas & relasi, pilihan database dan alasannya.
+4. **High-level design** — komponen dan alur data.
+5. **Deep dive** — 1–3 bagian paling berisiko: konsistensi, hot spot, sync, pembayaran.
+6. **Trade-off, failure & operasi** — apa yang terjadi jika X mati, monitoring, scaling berikutnya, biaya.
+
+Template dokumen desain singkat:
+
+```markdown
+## Context & Goals            ## Non-Goals
+## Requirements (F & NFR)     ## Estimations
+## API Contract               ## Data Model
+## Architecture (diagram)     ## Key Flows (sequence)
+## Trade-offs & Alternatives  ## Failure Modes & Mitigations
+## Security & Privacy         ## Observability & SLO
+## Rollout & Migration Plan   ## Open Questions
+```
+
+## Best Practices
+
+- **Mulai sederhana** (modular monolith + satu database + cache) dan tambah kompleksitas hanya saat estimasi/metrik menuntut.
+- **Service stateless** — session di token/Redis; file di object storage.
+- **Pisahkan jalur baca & tulis** saat beban baca dominan (cache, read replica, read model).
+- **Async untuk pekerjaan lambat** via queue; API mengembalikan `202` bila perlu.
+- **Idempotency di semua operasi yang bisa di-retry** (pembayaran, sync, webhook, consumer queue).
+- **Hilangkan SPOF** di jalur kritis: ≥ 2 instance, DB dengan replika & failover, backup teruji.
+- **Definisikan SLO** (mis. 99.9% request < 300 ms) dan ukur dengan p95/p99.
+- **Timeout, retry dengan backoff + jitter, circuit breaker** pada setiap panggilan antar service.
+
+## Anti-Patterns
+
+- **Microservices sejak hari pertama** untuk tim kecil dan domain yang belum jelas.
+- **Menambah cache untuk menutupi query yang salah** (tanpa index).
+- **Distributed transaction (2PC) di mana-mana** — gunakan saga/outbox.
+- **Mengabaikan failure mode** — desain hanya untuk *happy path*.
+- **Teknologi karena tren**, bukan karena kebutuhan (Kafka untuk 10 event/detik).
+- **Rata-rata latency** sebagai satu-satunya metrik.
+
+## Performance Considerations
+
+Angka kasar yang berguna (orde besaran, bukan angka pasti):
+
+| Operasi | Orde |
+| --- | --- |
+| Baca dari memory | ~100 ns |
+| Redis GET dalam satu data center | ~0,2–1 ms |
+| Query DB dengan index | ~1–10 ms |
+| Round-trip antar region | ~50–150 ms |
+| Request mobile di jaringan seluler | ~100–500+ ms |
+
+Implikasi: kurangi **jumlah round-trip** (terutama dari mobile), cache data panas, dan dekatkan data ke user.
+
+## Security Considerations
+
+- **Defense in depth** di setiap lapisan: WAF/rate limit di edge, auth di gateway, authz di service, enkripsi di storage.
+- **Network segmentation** — database & cache tidak terekspos publik.
+- **Secrets terpusat**, rotasi, dan audit akses.
+- **Data classification** — tentukan data sensitif (PII, finansial) sejak desain: enkripsi, masking, retensi.
+
+## Real-World Use Cases
+
+- [POS / ERP Application](/system-design/case-studies/pos-erp/) — offline-first, stok konsisten, laporan.
+- [Telecom Service Management](/system-design/case-studies/telecom-service-management/) — tiket gangguan, work order lapangan, SLA.
+- [Monitoring & Notification System](/system-design/case-studies/monitoring-notification/) — event masif, fan-out notifikasi.
+
+## Interview Questions
+
+1. **(Fundamental)** Apa beda scalability, availability, dan reliability?
+2. **(Fundamental)** Apa beda horizontal dan vertical scaling? Syarat aplikasi untuk horizontal scaling?
+3. **(Intermediate)** Jelaskan teorema CAP dengan contoh.
+4. **(Intermediate)** Kapan memakai cache dan apa risikonya?
+5. **(Intermediate)** Mengapa memakai message queue?
+6. **(Advanced)** Lakukan estimasi kapasitas untuk sistem notifikasi 10 juta user.
+
+## Sample Answers
+
+1. Scalability: kemampuan menangani beban yang bertambah dengan menambah resource. Availability: persentase waktu sistem bisa diakses. Reliability: sistem berfungsi benar secara konsisten — sistem bisa "available" tetapi tidak reliable jika mengembalikan data salah.
+2. Vertical menambah kapasitas satu mesin (sederhana, ada batas, SPOF). Horizontal menambah jumlah mesin (hampir tak terbatas, tahan gagal) dan menuntut service stateless, session di store bersama, serta data layer yang bisa di-scale.
+3. Saat partisi jaringan memisahkan node, sistem memilih tetap konsisten dengan menolak sebagian request (CP — mis. sistem saldo) atau tetap melayani dengan data yang mungkin usang (AP — mis. jumlah like, katalog). Tanpa partisi, trade-off-nya latency vs konsistensi (PACELC).
+4. Untuk data yang sering dibaca, jarang berubah, dan toleran sedikit stale; risikonya data usang, invalidasi yang sulit, stampede saat key populer expired, dan konsistensi antar instance. Mitigasi: TTL + jitter, invalidasi saat tulis, single-flight.
+5. Decoupling producer–consumer, menyerap lonjakan beban, memungkinkan retry & pemrosesan async, dan scaling consumer independen. Konsekuensinya: eventual consistency dan consumer harus idempotent.
+6. 10 juta user, misal 5 notifikasi/hari → 50 juta/hari ≈ 580/detik rata-rata, puncak ~10× ≈ 6.000/detik (kampanye). Payload ~1 KB → 50 GB/hari log. Desain: API menerima permintaan → queue (partisi per channel) → worker per channel (push/SMS/email) dengan rate limit provider, dedup, retry + DLQ, preferensi user, dan tabel status pengiriman ber-partisi waktu.
+
+## Practical Exercises
+
+1. Tulis dokumen desain 2 halaman (template di atas) untuk backend POS mini Anda.
+2. Lakukan estimasi kapasitas untuk aplikasi ticketing gangguan pelanggan 5 juta user.
+3. Gambar ulang arsitektur aplikasi terakhir Anda; tandai semua SPOF dan usulkan mitigasinya.
+4. Latih menjelaskan satu desain dalam 10 menit dengan timer.
+
+## Quick Reference
+
+- Kerangka: **Requirement → Estimasi → API & Data → High-level → Deep dive → Trade-off & failure**.
+- Stateless service + LB · DB primary + replica · cache · queue · object storage · observability.
+- CAP: saat partisi → C atau A. PACELC: selain itu → L atau C.
+- Ukur p95/p99, bukan rata-rata. 99.9% ≈ 8,76 jam/tahun.
+- Idempotency, timeout, retry + backoff, circuit breaker.
+- Mulai sederhana; tambah kompleksitas berdasarkan data.
+
+## Related Topics
+
+- [Scalability: Horizontal vs Vertical](/system-design/concepts/scalability/)
+- [Caching Strategy](/system-design/concepts/caching-strategy/)
+- [Message Queue](/system-design/concepts/message-queue/)
+- [Monolithic vs Microservices](/system-design/concepts/monolith-vs-microservices/)
+- [Framework Menjawab System Design](/interview/system-design/framework/)
+- Referensi: *Designing Data-Intensive Applications* (Martin Kleppmann), [System Design Primer](https://github.com/donnemartin/system-design-primer).

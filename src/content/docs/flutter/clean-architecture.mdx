@@ -1,0 +1,280 @@
+---
+title: "Clean Architecture di Flutter"
+description: "Layer presentation, domain, dan data; aturan dependency; struktur folder feature-first; dan kapan Clean Architecture berlebihan."
+level: intermediate
+status: complete
+version: "Dart 3.x / Flutter 3.x"
+updated: 2026-11-07
+tags: [flutter, architecture, clean-architecture, repository, use-case]
+---
+
+import Mermaid from '@components/Mermaid.astro';
+
+## Overview
+
+Clean Architecture (Robert C. Martin) memisahkan kode menjadi lapisan dengan satu aturan utama:
+**dependency hanya boleh mengarah ke dalam — ke aturan bisnis.** Di Flutter biasanya diterjemahkan menjadi tiga layer:
+
+| Layer | Isi | Boleh bergantung pada |
+| --- | --- | --- |
+| **Presentation** | Widget, page, Bloc/Cubit/Notifier | Domain |
+| **Domain** | Entity, use case, repository **interface**, failure | Tidak ada (pure Dart) |
+| **Data** | DTO/model, remote & local data source, repository **implementation**, mapper | Domain |
+
+## Why It Matters
+
+- **Testability:** use case dan entity bisa diuji tanpa Flutter, network, atau database.
+- **Isolasi perubahan:** ganti Dio ke http, REST ke GraphQL, Hive ke Drift — domain dan UI tidak berubah.
+- **Keterbacaan:** developer baru tahu di mana aturan bisnis berada.
+- **Skalabilitas tim:** fitur dapat dikerjakan paralel dengan kontrak yang jelas.
+
+## Core Concepts
+
+- **Entity** — objek bisnis inti (mis. `Order`, `Product`) beserta aturan yang melekat (mis. `order.canBeVoided`).
+- **Use case (interactor)** — satu aksi aplikasi (`CreateOrder`, `SyncPendingOrders`) yang mengorkestrasi entity dan repository.
+- **Repository interface** — kontrak di domain; implementasinya di data layer (**Dependency Inversion**).
+- **DTO / Model** — representasi data eksternal (JSON, row DB) + `fromJson/toJson`; dipetakan ke entity.
+- **Failure** — error domain (`NetworkFailure`, `ValidationFailure`) sebagai pengganti exception library.
+- **Composition root** — tempat semua dependency dirakit (get_it/injectable atau Riverpod providers).
+
+## How It Works
+
+<Mermaid code={`flowchart LR
+  subgraph Presentation
+    W[Widget] --> B[Bloc / Notifier]
+  end
+  subgraph Domain
+    UC[Use Case] --> RI[[Repository Interface]]
+    UC --> E[Entity]
+  end
+  subgraph Data
+    RImpl[Repository Impl] --> RDS[Remote DataSource - Dio]
+    RImpl --> LDS[Local DataSource - Drift]
+    RImpl --> M[DTO + Mapper]
+  end
+  B --> UC
+  RImpl -. implements .-> RI`} caption="Panah = arah dependency. Data mengimplementasikan interface milik Domain." />
+
+Alur runtime: tap tombol → Bloc menerima event → memanggil `CreateOrder` → use case memvalidasi aturan bisnis lalu
+memanggil `OrderRepository.save()` (interface) → di runtime yang terpasang adalah `OrderRepositoryImpl` yang menulis ke
+Drift dan outbox → hasil `Result<Order>` kembali ke Bloc → `emit` state.
+
+## Implementation
+
+### Struktur folder (feature-first)
+
+```text
+lib/
+├── core/                     # lintas fitur: error, network, db, di, utils, theme
+│   ├── error/failure.dart
+│   ├── network/dio_client.dart
+│   └── di/injection.dart
+└── features/
+    └── order/
+        ├── domain/
+        │   ├── entities/order.dart
+        │   ├── repositories/order_repository.dart      # abstract
+        │   └── usecases/create_order.dart
+        ├── data/
+        │   ├── models/order_dto.dart
+        │   ├── datasources/order_remote_ds.dart
+        │   ├── datasources/order_local_ds.dart
+        │   └── repositories/order_repository_impl.dart
+        └── presentation/
+            ├── bloc/order_bloc.dart
+            ├── pages/checkout_page.dart
+            └── widgets/
+```
+
+### Result type (tanpa package tambahan)
+
+```dart
+sealed class Result<T> {
+  const Result();
+  R fold<R>(R Function(Failure f) onErr, R Function(T v) onOk) => switch (this) {
+        Ok<T>(:final value) => onOk(value),
+        Err<T>(:final failure) => onErr(failure),
+      };
+}
+final class Ok<T> extends Result<T> { const Ok(this.value); final T value; }
+final class Err<T> extends Result<T> { const Err(this.failure); final Failure failure; }
+
+sealed class Failure { const Failure(this.message); final String message; }
+final class NetworkFailure extends Failure { const NetworkFailure(super.message); }
+final class ValidationFailure extends Failure { const ValidationFailure(super.message); }
+final class StorageFailure extends Failure { const StorageFailure(super.message); }
+```
+
+### Domain
+
+```dart
+// domain/entities/order.dart — pure Dart, tanpa import Flutter/Dio/Drift
+class Order {
+  const Order({required this.id, required this.items, required this.createdAt});
+  final String id;               // UUID dibuat di client (offline-first)
+  final List<OrderItem> items;
+  final DateTime createdAt;
+  int get total => items.fold(0, (s, i) => s + i.price * i.qty);
+  bool get isEmpty => items.isEmpty;
+}
+
+// domain/repositories/order_repository.dart
+abstract interface class OrderRepository {
+  Future<Result<Order>> save(Order order);
+  Stream<List<Order>> watchToday();
+}
+
+// domain/usecases/create_order.dart
+class CreateOrder {
+  const CreateOrder(this._repo, this._clock, this._uuid);
+  final OrderRepository _repo;
+  final DateTime Function() _clock;   // injectable → test deterministik
+  final String Function() _uuid;
+
+  Future<Result<Order>> call(List<OrderItem> items) async {
+    if (items.isEmpty) return const Err(ValidationFailure('Keranjang kosong'));
+    if (items.any((i) => i.qty <= 0)) return const Err(ValidationFailure('Qty tidak valid'));
+    return _repo.save(Order(id: _uuid(), items: items, createdAt: _clock()));
+  }
+}
+```
+
+### Data
+
+```dart
+class OrderRepositoryImpl implements OrderRepository {
+  OrderRepositoryImpl(this._local);
+  final OrderLocalDataSource _local;
+
+  @override
+  Future<Result<Order>> save(Order order) async {
+    try {
+      await _local.insertWithOutbox(OrderDto.fromEntity(order)); // 1 DB transaction
+      return Ok(order);
+    } on DatabaseException catch (e) {
+      return Err(StorageFailure(e.toString()));
+    }
+  }
+
+  @override
+  Stream<List<Order>> watchToday() =>
+      _local.watchToday().map((rows) => rows.map((r) => r.toEntity()).toList());
+}
+```
+
+### Composition root (get_it)
+
+```dart
+final sl = GetIt.instance;
+void configureDependencies() {
+  sl
+    ..registerLazySingleton<AppDatabase>(AppDatabase.new)
+    ..registerLazySingleton<OrderLocalDataSource>(() => OrderLocalDataSource(sl()))
+    ..registerLazySingleton<OrderRepository>(() => OrderRepositoryImpl(sl()))
+    ..registerFactory(() => CreateOrder(sl(), DateTime.now, const Uuid().v4))
+    ..registerFactory(() => OrderBloc(sl()));
+}
+```
+
+### Unit test use case — tanpa Flutter
+
+```dart
+class FakeOrderRepository implements OrderRepository {
+  final saved = <Order>[];
+  @override Future<Result<Order>> save(Order o) async { saved.add(o); return Ok(o); }
+  @override Stream<List<Order>> watchToday() => Stream.value(saved);
+}
+
+void main() {
+  test('menolak keranjang kosong', () async {
+    final repo = FakeOrderRepository();
+    final uc = CreateOrder(repo, () => DateTime(2026), () => 'id-1');
+    final r = await uc([]);
+    expect(r, isA<Err<Order>>());
+    expect(repo.saved, isEmpty);
+  });
+}
+```
+
+## Best Practices
+
+- **Domain pure Dart.** Jika file domain mengimport `package:flutter`, `dio`, atau `drift`, batas sudah bocor. Alasan: domain harus bisa diuji dan dipakai ulang tanpa framework.
+- **Repository mengembalikan entity**, bukan DTO/Response — agar perubahan format API tidak menjalar ke UI.
+- **Mapper eksplisit** DTO ↔ entity di data layer.
+- **Inject waktu & ID generator** ke use case untuk test deterministik.
+- **Feature-first** di atas layer-first untuk project menengah ke atas — kode satu fitur berada berdekatan.
+- **Pragmatis:** untuk fitur CRUD tipis, Bloc boleh memanggil repository langsung tanpa use case "pass-through". Tambahkan use case saat ada aturan bisnis atau orkestrasi beberapa repository.
+- **Tegakkan batas dengan tooling** — mis. `import_lint`/custom lint atau review checklist di [AGENTS.md](/agent-instructions/template-flutter-app/).
+
+## Anti-Patterns
+
+- **Use case pass-through di mana-mana** (`GetProducts` hanya memanggil `repo.getProducts()`) → boilerplate tanpa nilai.
+- **Entity = DTO** dengan anotasi `@JsonSerializable` di domain → domain bergantung pada format API.
+- **Exception library bocor ke UI** (`DioException` ditangkap di widget).
+- **"Shared" folder raksasa** yang berisi model semua fitur → coupling antar fitur.
+- **Repository yang tahu tentang UI** (mengembalikan `Widget` atau pesan yang dilokalisasi).
+- **Abstraksi spekulatif** — interface untuk kelas yang hanya punya satu implementasi dan tidak perlu di-mock.
+
+## Performance Considerations
+
+Layer tambahan berdampak runtime yang hampir nol (pemanggilan method dan mapping objek). Biaya sebenarnya ada di
+**waktu developer** (boilerplate) dan **ukuran codebase**. Perhatikan:
+
+- Mapping list besar (ribuan item) di main isolate → lakukan di isolate atau mapping lazy.
+- Jangan me-*watch* query besar hanya untuk menampilkan count — buat query khusus di data source.
+
+## Security Considerations
+
+- Validasi aturan bisnis kritis (harga, diskon, stok) **di use case dan di server** — client bisa dimodifikasi.
+- Data source lokal untuk token harus memakai secure storage; data source lain tidak boleh mengaksesnya langsung.
+- Failure yang ditampilkan ke user tidak boleh berisi detail internal (stack trace, query SQL).
+
+## Real-World Use Cases
+
+- **POS offline-first:** `CreateOrder` menulis lokal + outbox; `SyncPendingOrders` dipanggil WorkManager. UI tidak tahu ada sync.
+- **Migrasi backend:** API v1 → v2 hanya mengubah `RemoteDataSource` + mapper.
+- **White-label app:** domain & data sama, presentation berbeda per brand.
+
+## Interview Questions
+
+1. **(Fundamental)** Jelaskan tiga layer Clean Architecture di Flutter dan isinya.
+2. **(Fundamental)** Apa aturan dependency (dependency rule)?
+3. **(Intermediate)** Mengapa repository interface diletakkan di domain, bukan di data?
+4. **(Intermediate)** Apa beda entity dan model/DTO?
+5. **(Intermediate)** Bagaimana error dari Dio sampai ke UI dalam arsitektur ini?
+6. **(Advanced)** Kapan Clean Architecture berlebihan? Bagaimana Anda menyederhanakannya?
+7. **(Advanced)** Bagaimana Anda menegakkan batas layer di tim yang besar?
+
+## Sample Answers
+
+1. Presentation (widget + state management), Domain (entity, use case, repository interface — pure Dart), Data (DTO, data source remote/lokal, implementasi repository).
+2. Kode di lapisan luar boleh bergantung pada lapisan dalam, tidak sebaliknya. Domain tidak mengimport data atau presentation.
+3. Itu penerapan Dependency Inversion: use case bergantung pada abstraksi yang ia miliki sendiri; data layer menyesuaikan diri dengan mengimplementasikannya. Akibatnya domain bisa diuji dengan fake repository dan tidak berubah saat sumber data berganti.
+4. Entity mewakili konsep bisnis dan aturannya; DTO mewakili bentuk data eksternal (JSON/row) dan serialisasinya. Dipisah agar perubahan API tidak merusak domain.
+5. Remote data source melempar `DioException` → repository menangkap dan memetakan ke `NetworkFailure` → mengembalikan `Err(failure)` → Bloc emit `FailureState(message)` → UI menampilkan pesan ramah.
+6. Untuk app kecil/prototype atau fitur CRUD tipis, use case pass-through dan interface untuk semua kelas menambah boilerplate tanpa manfaat. Saya menyederhanakan dengan melewati use case untuk CRUD, tetap mempertahankan repository dan pemisahan DTO/entity.
+7. Struktur folder baku, lint aturan import, code review checklist, template generator (mason brick), dan instruksi AGENTS.md yang melarang import tertentu di domain.
+
+## Practical Exercises
+
+1. Ambil satu fitur dari project lama Anda dan pisahkan menjadi tiga layer; hitung berapa file yang berubah saat endpoint API diganti.
+2. Tulis unit test untuk use case dengan fake repository tanpa `flutter_test`.
+3. Ganti local data source dari SharedPreferences ke Drift tanpa mengubah domain & presentation.
+4. Tambahkan custom lint/CI check yang gagal jika folder `domain/` mengimport `package:flutter` atau `package:dio`.
+
+## Quick Reference
+
+- Dependency → **ke dalam** (ke domain). Domain = **pure Dart**.
+- Interface repository di **domain**, implementasi di **data**.
+- DTO ≠ Entity — pisahkan dengan **mapper**.
+- Error library → **Failure** domain di repository.
+- Use case untuk aturan bisnis/orkestrasi; lewati jika hanya pass-through.
+- Feature-first folder, composition root tunggal.
+
+## Related Topics
+
+- [Repository Pattern & Dependency Injection](/flutter/repository-pattern-di/)
+- [State Management](/flutter/state-management/)
+- [SOLID Principles](/fundamentals/solid-principles/)
+- [Clean Architecture (Lintas Platform)](/system-design/concepts/clean-architecture/)
+- [AGENTS.md — Flutter Project](/agent-instructions/template-flutter-app/)

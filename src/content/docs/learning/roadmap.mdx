@@ -1,0 +1,101 @@
+---
+title: Learning Roadmap
+description: Jalur belajar dari Flutter Developer menjadi Software Engineer yang memahami siklus pengembangan aplikasi end-to-end.
+trackable: false
+updated: 2026-11-13
+---
+
+import Mermaid from '@components/Mermaid.astro';
+
+Roadmap ini dirancang untuk profil **Flutter Developer (±2 tahun, intermediate)** yang ingin berkembang menjadi
+**Software Engineer** dengan fokus **mobile engineering**, sekaligus siap interview di berbagai tipe perusahaan
+(startup, e-commerce, bank/fintech, BUMN/korporat, software house, multinasional).
+Prinsipnya: **perdalam yang sudah dikuasai (Flutter), lalu perlebar ke sisi server, data, dan operasi.**
+
+**Target profil:** *Mobile Software Engineer berbasis Flutter* — bukan hanya "bisa Flutter", tetapi mampu menangani
+aplikasi mobile end-to-end: arsitektur, data & offline, integrasi native **Android (Kotlin)** dan **iOS (Swift)**,
+keamanan, testing, rilis ke Play Store & App Store, serta cukup paham backend, database, dan system design untuk
+berdiskusi setara dengan tim lain. Profil ini memenuhi kebutuhan mayoritas lowongan Flutter dan membuka jalan ke posisi
+Android native.
+
+<Mermaid code={`flowchart LR
+  A[Fase 1<br/>Fondasi & Flutter Mastery] --> B[Fase 2<br/>Backend & Database]
+  B --> C[Fase 3<br/>Arsitektur & System Design]
+  C --> D[Fase 4<br/>DevOps, Security & Kualitas]
+  D --> E[Fase 5<br/>Interview Readiness]
+  A -. paralel .-> K[Android Native & Kotlin]
+  A -. paralel .-> I[iOS & Swift Essentials]
+  E --> F((Apply & Iterate))`} caption="Alur fase belajar — Android & iOS native berjalan paralel sebagai pelengkap Flutter" />
+
+## Tingkat Materi
+
+| Level | Ciri | Target kemampuan |
+| --- | --- | --- |
+| **Beginner** | Definisi, istilah, cara pakai dasar | Bisa menjelaskan konsep dengan benar |
+| **Intermediate** | Cara kerja, pola implementasi, trade-off umum | Bisa mengimplementasikan dan memilih pendekatan |
+| **Advanced** | Internal, edge case, skala, failure mode | Bisa mendesain, men-debug masalah produksi, dan mempertahankan keputusan |
+
+## Fase 1 — Fondasi & Flutter Mastery (minggu 1–3)
+
+Tujuan: menjelaskan *mengapa*, bukan hanya *bagaimana*, untuk semua yang sudah Anda pakai sehari-hari.
+
+- [SOLID Principles](/fundamentals/solid-principles/) · [Git Workflow](/fundamentals/git-workflow/) · [Clean Code](/fundamentals/clean-code/)
+- [Async Programming: Future, Stream, Isolate](/flutter/async-programming/)
+- [Widget Lifecycle](/flutter/widget-lifecycle/) · [State Management](/flutter/state-management/)
+- [Clean Architecture di Flutter](/flutter/clean-architecture/) · [Repository Pattern & DI](/flutter/repository-pattern-di/)
+- [Offline-First Application](/flutter/offline-first/) — pengalaman transaksi & penyimpanan lokal Anda adalah *selling point*; kuasai sampai advanced.
+
+**Checkpoint:** bisa menggambar arsitektur app terakhir Anda dan menjelaskan setiap keputusan + trade-off dalam 5 menit.
+
+## Fase 2 — Backend & Database (minggu 4–6)
+
+Tujuan: memahami sisi server dari API yang selama ini Anda konsumsi.
+
+- [Node.js Event Loop](/backend/nodejs-event-loop/) · [RESTful API Design](/backend/restful-api-design/)
+- [Authentication & Authorization (JWT, OAuth2)](/backend/authentication-authorization/)
+- [JOIN](/database/joins/) · [Indexing](/database/indexing/) · [Transactions & ACID](/database/transactions-acid/)
+- [Locking & Concurrency](/database/locking-concurrency/) · [Query Optimization](/database/query-optimization/)
+
+**Project latihan:** REST API POS mini (Node.js + TypeScript + PostgreSQL) — produk, transaksi dengan idempotency key, laporan harian, auth JWT + RBAC. Hubungkan dengan app Flutter Anda.
+
+## Fase 3 — Arsitektur & System Design (minggu 7–8)
+
+- [System Design Fundamentals](/system-design/concepts/fundamentals/) · [Scalability](/system-design/concepts/scalability/) · [Caching Strategy](/system-design/concepts/caching-strategy/)
+- [Message Queue](/system-design/concepts/message-queue/) · [Offline-First & Sync Strategy](/system-design/concepts/offline-first-architecture/)
+- Studi kasus: [POS / ERP](/system-design/case-studies/pos-erp/) · [Telecom Service Management](/system-design/case-studies/telecom-service-management/)
+
+## Fase 4 — DevOps, Security & Kualitas (minggu 9–10)
+
+- [Dockerfile & Docker Compose](/devops/dockerfile-compose/) · [GitHub Actions](/devops/github-actions/)
+- [OWASP Top 10](/security/owasp-top-10/) · [Mobile Application Security](/security/mobile-app-security/)
+- [Testing Fundamentals](/testing-performance/testing-fundamentals/) · [Flutter Testing](/flutter/testing/)
+
+**Project latihan:** containerize API Fase 2, buat pipeline CI (lint → test → build image) dan pipeline Flutter (analyze → test → build APK).
+
+## Fase 5 — Interview Readiness (minggu 11–12)
+
+- [Strategi Persiapan Interview](/interview/company-prep/overview/) · [Tipe Perusahaan & Fokus Penilaian](/interview/company-prep/company-types/)
+- [Framework Menjawab System Design](/interview/system-design/framework/)
+- [STAR Method & Story Bank](/interview/behavioral/star-method/)
+- [Problem Solving Framework & Big-O](/interview/coding-test/problem-solving-framework/)
+- Latihan rutin: [Interview Simulator](/learning/interview-simulator/), [Quiz](/learning/quiz/), [Review](/learning/review/)
+
+## Track Paralel — Android Native & Kotlin
+
+Satu topik per minggu, berjalan bersamaan dengan fase utama:
+[Activity Lifecycle](/android/activity-lifecycle/) → [Coroutines & Flow](/android/coroutines-flow/) →
+[ViewModel](/android/viewmodel-lifecycle-aware/) → [Room](/android/room-database/) → [WorkManager](/android/workmanager/) →
+[Platform Channels](/android/platform-channels/).
+
+## Track Paralel — iOS & Swift Essentials
+
+Cukup untuk merilis dan mengintegrasikan fitur Flutter di iOS (tidak sedalam Android):
+[Swift Fundamentals](/ios/swift-fundamentals/) → [Struktur Proyek iOS](/ios/ios-project-structure/) →
+[Permission & Privacy](/ios/ios-permissions-privacy/) → [APNs & FCM](/ios/apns-push/) →
+[Background di iOS](/ios/ios-background/) → [Signing & App Store](/ios/signing-testflight-appstore/) →
+[iOS vs Android Gotchas](/ios/ios-vs-android-gotchas/).
+
+## Track Berkelanjutan — AI-Assisted Engineering
+
+Pasang [AGENTS.md template](/agent-instructions/template-flutter-app/) di setiap project latihan sejak hari pertama,
+lalu perbarui setiap kali agent mengulang kesalahan yang sama. Lihat [AI Coding Workflow](/ai-engineering/guides/ai-coding-workflow/).

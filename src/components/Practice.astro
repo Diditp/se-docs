@@ -1,0 +1,234 @@
+---
+// Satu komponen untuk 4 mode latihan:
+//  flashcards — kartu Q/A, self-grade, Leitner spaced repetition
+//  quiz       — multiple choice dengan pembahasan
+//  simulator  — simulasi interview: pertanyaan acak + timer + self-rating
+//  review     — Daily/Weekly Review: kartu jatuh tempo + topik lemah
+import questions from '../data/questions.json';
+import { DOMAINS, allTopics } from '../data/catalog.mjs';
+
+interface Props { mode: 'flashcards' | 'quiz' | 'simulator' | 'review' }
+const { mode } = Astro.props;
+const titles = Object.fromEntries(allTopics().map((t) => [t.slug, t.title]));
+const domainOpts = DOMAINS.map((d) => ({ id: d.id, label: `${d.num} ${d.short}` }));
+---
+
+<div class="px not-content" data-practice data-mode={mode} data-qs={JSON.stringify(questions)} data-titles={JSON.stringify(titles)}>
+  <div class="ctrl">
+    <label>Domain
+      <select data-f="domain">
+        <option value="">Semua domain</option>
+        {domainOpts.map((d) => <option value={d.id}>{d.label}</option>)}
+      </select>
+    </label>
+    <label>Level
+      <select data-f="level">
+        <option value="">Semua level</option>
+        <option value="b">Beginner</option><option value="i">Intermediate</option><option value="a">Advanced</option>
+      </select>
+    </label>
+    {mode === 'simulator' && (
+      <label>Jumlah
+        <select data-f="count"><option>5</option><option selected>8</option><option>12</option></select>
+      </label>
+    )}
+    {mode !== 'review' && <label class="chk"><input type="checkbox" data-f="weak" /> Hanya topik lemah</label>}
+    <button type="button" data-act="start" class="primary">{mode === 'simulator' ? 'Mulai sesi' : 'Mulai / Acak ulang'}</button>
+  </div>
+  <div class="info" data-info></div>
+  <div class="stage" data-stage></div>
+</div>
+
+<script>
+  import { load, update, grade, isDue, shuffle, escapeHtml as esc } from '../scripts/store';
+
+  type Q = { id: string; topic: string; domain: string; level: string; q: string; a: string; options?: string[]; correct?: number; explain?: string };
+  const el = document.querySelector<HTMLElement>('[data-practice]')!;
+  const mode = el.dataset.mode!;
+  const all: Q[] = JSON.parse(el.dataset.qs!);
+  const titles: Record<string, string> = JSON.parse(el.dataset.titles!);
+  const stage = el.querySelector<HTMLElement>('[data-stage]')!;
+  const info = el.querySelector<HTMLElement>('[data-info]')!;
+  const f = (k: string) => el.querySelector<HTMLInputElement & HTMLSelectElement>(`[data-f=${k}]`);
+  const topicLink = (q: Q) => `<a href="/${esc(q.topic)}/">${esc(titles[q.topic] ?? q.topic)}</a>`;
+  const md = (s: string) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\n/g, '<br>');
+  const LV: Record<string, string> = { b: 'Beginner', i: 'Intermediate', a: 'Advanced' };
+
+  let deck: Q[] = [];
+  let idx = 0;
+  let score = { ok: 0, bad: 0 };
+  let timer: number | undefined;
+
+  function pool(): Q[] {
+    const d = load();
+    let qs = all;
+    const dom = f('domain')?.value, lvl = f('level')?.value;
+    if (dom) qs = qs.filter((q) => q.domain === dom);
+    if (lvl) qs = qs.filter((q) => q.level === lvl);
+    if (mode === 'quiz') qs = qs.filter((q) => q.options?.length);
+    if (f('weak')?.checked) qs = qs.filter((q) => d.weak[q.topic]);
+    if (mode === 'review') {
+      // kartu jatuh tempo + semua kartu dari topik lemah, yang lemah di depan
+      const due = qs.filter((q) => isDue(d, q.id) || d.weak[q.topic]);
+      return shuffle(due).sort((a, b) => (d.weak[b.topic] ?? 0) - (d.weak[a.topic] ?? 0)).slice(0, 20);
+    }
+    if (mode === 'flashcards') {
+      // kartu jatuh tempo diprioritaskan
+      return [...shuffle(qs.filter((q) => isDue(d, q.id))), ...shuffle(qs.filter((q) => !isDue(d, q.id)))];
+    }
+    if (mode === 'simulator') return shuffle(qs).slice(0, Number(f('count')?.value ?? 8));
+    return shuffle(qs).slice(0, 10);
+  }
+
+  function start() {
+    clearInterval(timer);
+    deck = pool();
+    idx = 0;
+    score = { ok: 0, bad: 0 };
+    if (!deck.length) {
+      stage.innerHTML = `<p class="empty">${mode === 'review' ? '🎉 Tidak ada kartu jatuh tempo dan tidak ada topik lemah. Coba Flashcards atau Quiz.' : 'Tidak ada pertanyaan untuk filter ini.'}</p>`;
+      info.textContent = '';
+      return;
+    }
+    show();
+  }
+
+  function progress() {
+    info.innerHTML = `Pertanyaan <b>${Math.min(idx + 1, deck.length)}</b> / ${deck.length} · benar ${score.ok} · perlu ulang ${score.bad}`;
+  }
+
+  function finish() {
+    clearInterval(timer);
+    const pct = deck.length ? Math.round((score.ok / deck.length) * 100) : 0;
+    const d = load();
+    const weak = Object.entries(d.weak).sort((a, b) => b[1] - a[1]).slice(0, 5);
+    stage.innerHTML = `<div class="card done">
+      <h3>Sesi selesai</h3>
+      <p class="big">${pct}%</p>
+      <p>${score.ok} dikuasai · ${score.bad} perlu diulang</p>
+      ${weak.length ? `<p class="muted">Topik lemah saat ini:</p><ul>${weak.map(([s, n]) => `<li><a href="/${esc(s)}/">${esc(titles[s] ?? s)}</a> (skor ${n})</li>`).join('')}</ul>` : ''}
+      <button type="button" class="primary" data-act="start">Sesi baru</button></div>`;
+    info.textContent = '';
+  }
+
+  function next(correct: boolean) {
+    const q = deck[idx];
+    update((d) => {
+      grade(d, q.id, correct, q.topic);
+      // di mode review, jawaban benar menurunkan skor kelemahan topik
+      if (correct && mode === 'review' && d.weak[q.topic]) {
+        d.weak[q.topic] -= 1;
+        if (d.weak[q.topic] <= 0) delete d.weak[q.topic];
+      }
+    });
+    correct ? score.ok++ : score.bad++;
+    idx++;
+    idx >= deck.length ? finish() : show();
+  }
+
+  function show() {
+    const q = deck[idx];
+    progress();
+    const head = `<div class="qh"><span class="tag">${LV[q.level] ?? ''}</span><span class="tp">${topicLink(q)}</span></div>`;
+
+    if (mode === 'quiz' && q.options) {
+      stage.innerHTML = `<div class="card">${head}<p class="qq">${md(q.q)}</p>
+        <div class="opts">${q.options.map((o, i) => `<button type="button" class="opt" data-opt="${i}">${String.fromCharCode(65 + i)}. ${md(o)}</button>`).join('')}</div>
+        <div class="exp" hidden></div></div>`;
+      stage.querySelectorAll<HTMLButtonElement>('[data-opt]').forEach((b) => b.addEventListener('click', () => {
+        const pick = Number(b.dataset.opt);
+        const ok = pick === q.correct;
+        stage.querySelectorAll<HTMLButtonElement>('[data-opt]').forEach((x) => {
+          x.disabled = true;
+          if (Number(x.dataset.opt) === q.correct) x.classList.add('right');
+        });
+        if (!ok) b.classList.add('wrong');
+        const exp = stage.querySelector<HTMLElement>('.exp')!;
+        exp.hidden = false;
+        exp.innerHTML = `<p><b>${ok ? '✓ Benar.' : '✗ Kurang tepat.'}</b> ${md(q.explain ?? q.a)}</p><button type="button" class="primary" data-next>Lanjut →</button>`;
+        exp.querySelector('[data-next]')!.addEventListener('click', () => next(ok));
+      }));
+      return;
+    }
+
+    // flashcards / review / simulator: open-ended
+    const sim = mode === 'simulator';
+    stage.innerHTML = `<div class="card">${head}
+      ${sim ? '<div class="timer" data-timer>02:00</div>' : ''}
+      <p class="qq">${md(q.q)}</p>
+      ${sim ? '<textarea rows="5" placeholder="Jawab dengan suara keras atau tulis poin-poin jawaban Anda di sini sebelum melihat sample answer…"></textarea>' : ''}
+      <button type="button" data-reveal>Tampilkan jawaban</button>
+      <div class="ans" hidden><p class="lbl">Sample answer</p><p>${md(q.a)}</p>${q.explain ? `<p>${md(q.explain)}</p>` : ''}
+        <div class="grade"><span>Jawaban saya:</span>
+          <button type="button" class="ok" data-g="1">${sim ? 'Lengkap & jelas' : 'Ingat ✓'}</button>
+          <button type="button" class="bad" data-g="0">${sim ? 'Kurang / tidak tahu' : 'Lupa ✗'}</button>
+        </div></div></div>`;
+    if (sim) {
+      clearInterval(timer);
+      let left = 120;
+      const t = stage.querySelector<HTMLElement>('[data-timer]')!;
+      timer = window.setInterval(() => {
+        left--;
+        t.textContent = `${String(Math.floor(Math.max(left, 0) / 60)).padStart(2, '0')}:${String(Math.max(left, 0) % 60).padStart(2, '0')}`;
+        if (left <= 0) { t.classList.add('over'); clearInterval(timer); }
+      }, 1000);
+    }
+    stage.querySelector('[data-reveal]')!.addEventListener('click', (e) => {
+      (e.currentTarget as HTMLElement).hidden = true;
+      stage.querySelector<HTMLElement>('.ans')!.hidden = false;
+      clearInterval(timer);
+    });
+    stage.querySelectorAll<HTMLButtonElement>('[data-g]').forEach((b) => b.addEventListener('click', () => next(b.dataset.g === '1')));
+  }
+
+  el.addEventListener('click', (e) => {
+    if ((e.target as HTMLElement).closest('[data-act=start]')) start();
+  });
+  el.querySelectorAll('select, input').forEach((x) => x.addEventListener('change', start));
+
+  // Keyboard: Space = reveal, 1 = benar, 2 = salah
+  document.addEventListener('keydown', (e) => {
+    if ((e.target as HTMLElement).matches('textarea, input, select')) return;
+    if (e.key === ' ') { const r = stage.querySelector<HTMLButtonElement>('[data-reveal]:not([hidden])'); if (r) { e.preventDefault(); r.click(); } }
+    if (e.key === '1') stage.querySelector<HTMLButtonElement>('[data-g="1"]')?.click();
+    if (e.key === '2') stage.querySelector<HTMLButtonElement>('[data-g="0"]')?.click();
+  });
+
+  start();
+</script>
+
+<style>
+  .px { margin-top: 1rem; }
+  .ctrl { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: end; padding: 0.75rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.75rem; background: var(--sl-color-bg-nav); }
+  .ctrl label { display: flex; flex-direction: column; gap: 0.2rem; font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  .ctrl label.chk { flex-direction: row; align-items: center; gap: 0.35rem; padding-bottom: 0.35rem; }
+  select { font: inherit; font-size: var(--sl-text-sm); padding: 0.3rem 0.5rem; border-radius: 0.4rem; border: 1px solid var(--sl-color-gray-5); background: var(--sl-color-bg); color: var(--sl-color-text); }
+  .info { font-size: var(--sl-text-sm); color: var(--sl-color-gray-3); margin: 1rem 0 0.5rem; min-height: 1.2em; }
+  .stage :global(.card) { border: 1px solid var(--sl-color-gray-5); border-radius: 0.75rem; padding: 1.25rem; background: var(--sl-color-bg-nav); position: relative; }
+  .stage :global(.qh) { display: flex; gap: 0.5rem; align-items: center; font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  .stage :global(.tag) { padding: 0 0.45rem; border-radius: 99px; border: 1px solid var(--sl-color-gray-5); }
+  .stage :global(.tp a) { color: var(--sl-color-accent-high); }
+  .stage :global(.qq) { font-size: var(--sl-text-lg); font-weight: 600; color: var(--sl-color-white); margin: 0.75rem 0 1rem; line-height: 1.45; }
+  .stage :global(.ans) { margin-top: 1rem; padding-top: 1rem; border-top: 1px dashed var(--sl-color-gray-5); color: var(--sl-color-gray-1); font-size: var(--sl-text-sm); line-height: 1.6; }
+  .stage :global(.lbl) { font-size: var(--sl-text-xs); text-transform: uppercase; letter-spacing: 0.05em; color: var(--sl-color-gray-3); margin: 0 0 0.25rem; }
+  .stage :global(.grade) { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 1rem; color: var(--sl-color-gray-3); }
+  .stage :global(.opts) { display: flex; flex-direction: column; gap: 0.5rem; }
+  .stage :global(.opt) { text-align: start; padding: 0.6rem 0.8rem; }
+  .stage :global(.opt.right) { border-color: var(--sl-color-green); background: var(--sl-color-green-low); color: var(--sl-color-green-high); }
+  .stage :global(.opt.wrong) { border-color: var(--sl-color-red); background: var(--sl-color-red-low); color: var(--sl-color-red-high); }
+  .stage :global(.exp) { margin-top: 1rem; font-size: var(--sl-text-sm); color: var(--sl-color-gray-1); }
+  .stage :global(.timer) { position: absolute; top: 1rem; right: 1rem; font-variant-numeric: tabular-nums; font-weight: 700; color: var(--sl-color-gray-2); }
+  .stage :global(.timer.over) { color: var(--sl-color-red-high); }
+  .stage :global(textarea) { width: 100%; box-sizing: border-box; font: inherit; font-size: var(--sl-text-sm); padding: 0.6rem; border-radius: 0.5rem; border: 1px solid var(--sl-color-gray-5); background: var(--sl-color-bg); color: var(--sl-color-text); margin-bottom: 0.75rem; }
+  .stage :global(.done) { text-align: center; }
+  .stage :global(.done ul) { text-align: start; display: inline-block; }
+  .stage :global(.big) { font-size: 2.5rem; font-weight: 800; color: var(--sl-color-accent-high); margin: 0.25rem 0; }
+  .stage :global(.muted), .stage :global(.empty) { color: var(--sl-color-gray-3); }
+  .stage :global(code) { font-size: 0.9em; }
+  .px :global(button) { font: inherit; font-size: var(--sl-text-sm); cursor: pointer; padding: 0.4rem 0.85rem; border-radius: 0.5rem; border: 1px solid var(--sl-color-gray-5); background: transparent; color: var(--sl-color-gray-1); }
+  .px :global(button:hover:not(:disabled)) { border-color: var(--sl-color-accent); color: var(--sl-color-white); }
+  .px :global(button.primary) { background: var(--sl-color-accent); border-color: var(--sl-color-accent); color: var(--sl-color-black); font-weight: 600; }
+  .px :global(button.ok) { border-color: var(--sl-color-green); color: var(--sl-color-green-high); }
+  .px :global(button.bad) { border-color: var(--sl-color-red); color: var(--sl-color-red-high); }
+  .px :global(button:disabled) { cursor: default; }
+</style>

@@ -1,0 +1,261 @@
+---
+title: "Offline-First Application"
+description: "Merancang aplikasi Flutter yang tetap berfungsi tanpa internet: local database sebagai source of truth, outbox pattern, sinkronisasi idempotent, dan resolusi konflik."
+level: advanced
+status: complete
+version: "Flutter 3.x · Drift 2.x · WorkManager"
+updated: 2026-11-07
+tags: [flutter, offline-first, sync, drift, outbox, idempotency]
+---
+
+import Mermaid from '@components/Mermaid.astro';
+
+## Overview
+
+**Offline-first** berarti aplikasi dirancang dengan asumsi jaringan **tidak dapat diandalkan**. Semua baca/tulis UI
+dilakukan ke **database lokal**, dan **sinkronisasi** dengan server berjalan terpisah di background. Berbeda dengan
+*online-first + cache*, di mana aplikasi gagal saat offline dan cache hanya optimasi.
+
+## Why It Matters
+
+- **Bisnis tetap berjalan:** kasir POS di area sinyal buruk, petugas lapangan (survei, maintenance jaringan, meter reading) di lokasi terpencil.
+- **UX cepat:** setiap aksi langsung tersimpan lokal (latency ~ms), tidak menunggu round-trip server.
+- **Data tidak hilang:** transaksi tercatat walau koneksi putus di tengah proses.
+- Ini adalah **keunggulan nyata dari pengalaman Anda** (aplikasi transaksi + penyimpanan lokal) — kuasai sampai level desain sistem.
+
+## Core Concepts
+
+- **Local source of truth** — UI hanya membaca dari DB lokal (Drift/SQLite) melalui query yang di-*watch*.
+- **Outbox pattern** — setiap perubahan lokal juga dicatat di tabel `outbox` dalam **transaksi DB yang sama**.
+- **Client-generated ID** — UUID (v4/v7) dibuat di device agar record dapat dibuat & direferensikan offline.
+- **Idempotency** — server memproses request yang sama berkali-kali dengan hasil yang sama (dedup by ID / `Idempotency-Key`).
+- **Push & Pull** — push: kirim outbox ke server. Pull: ambil perubahan server sejak *cursor* terakhir (`updated_at`/`version`/change sequence).
+- **Conflict resolution** — strategi saat data yang sama diubah di dua tempat: LWW, server-wins, merge per field, atau domain-specific (ledger).
+- **Sync state di UI** — tanda "belum tersinkron", jumlah antrian, waktu sync terakhir.
+
+## How It Works
+
+<Mermaid code={`sequenceDiagram
+  participant UI
+  participant DB as Local DB (Drift)
+  participant W as Sync Worker
+  participant API as Server API
+  UI->>DB: BEGIN TX - insert order + insert outbox - COMMIT
+  DB-->>UI: watch() emit daftar order (status: pending)
+  Note over W: Trigger: online / periodic / app resume
+  W->>DB: ambil outbox status=pending (urut created_at)
+  W->>API: POST /orders (Idempotency-Key = order.id)
+  API-->>W: 201 / 200 (sudah ada)
+  W->>DB: tandai outbox done, order.synced = true
+  W->>API: GET /changes?since=cursor
+  API-->>W: perubahan + cursor baru
+  W->>DB: upsert perubahan, simpan cursor`} caption="Alur tulis lokal → outbox → push idempotent → pull berbasis cursor" />
+
+## Implementation
+
+### Skema lokal (Drift)
+
+```dart
+class Orders extends Table {
+  TextColumn get id => text()();                       // UUID dari client
+  IntColumn get total => integer()();
+  DateTimeColumn get createdAt => dateTime()();
+  BoolColumn get synced => boolean().withDefault(const Constant(false))();
+  @override Set<Column> get primaryKey => {id};
+}
+
+class Outbox extends Table {
+  IntColumn get seq => integer().autoIncrement()();    // urutan lokal
+  TextColumn get entity => text()();                   // 'order'
+  TextColumn get entityId => text()();
+  TextColumn get op => text()();                       // 'create' | 'update' | 'delete'
+  TextColumn get payload => text()();                  // JSON
+  IntColumn get attempts => integer().withDefault(const Constant(0))();
+  TextColumn get lastError => text().nullable()();
+  DateTimeColumn get createdAt => dateTime()();
+}
+```
+
+### Tulis atomik: data + outbox dalam satu transaksi
+
+```dart
+Future<void> createOrder(OrderDto o) => db.transaction(() async {
+      await db.into(db.orders).insert(o.toCompanion());
+      await db.into(db.outbox).insert(OutboxCompanion.insert(
+            entity: 'order', entityId: o.id, op: 'create',
+            payload: jsonEncode(o.toJson()), createdAt: DateTime.now(),
+          ));
+      // update stok lokal juga di sini → konsisten secara lokal
+    });
+```
+
+### Sync worker: push berurutan, idempotent, dengan backoff
+
+```dart
+class SyncService {
+  SyncService(this.db, this.api);
+  final AppDatabase db;
+  final ApiClient api;
+  bool _running = false;                         // cegah sync paralel
+
+  Future<void> sync() async {
+    if (_running) return;
+    _running = true;
+    try {
+      await _push();
+      await _pull();
+    } finally {
+      _running = false;
+    }
+  }
+
+  Future<void> _push() async {
+    final pending = await (db.select(db.outbox)..orderBy([(t) => OrderingTerm(expression: t.seq)])).get();
+    for (final item in pending) {
+      try {
+        await api.send(item.entity, item.op, jsonDecode(item.payload),
+            idempotencyKey: '${item.entity}:${item.entityId}:${item.seq}');
+        await db.transaction(() async {
+          await (db.delete(db.outbox)..where((t) => t.seq.equals(item.seq))).go();
+          if (item.entity == 'order') {
+            await (db.update(db.orders)..where((t) => t.id.equals(item.entityId)))
+                .write(const OrdersCompanion(synced: Value(true)));
+          }
+        });
+      } on ApiException catch (e) {
+        if (e.isClientError && e.statusCode != 409) {
+          // 4xx permanen (validasi): jangan retry selamanya → tandai untuk review manual
+          await _markFailed(item, e.message);
+          continue;
+        }
+        await _incrementAttempt(item, e.message);
+        break; // error jaringan/5xx: hentikan, pertahankan urutan, coba lagi nanti
+      }
+    }
+  }
+
+  Future<void> _pull() async {
+    final cursor = await db.getSyncCursor('products');
+    final res = await api.getChanges('products', since: cursor);
+    await db.transaction(() async {
+      for (final p in res.items) {
+        await db.into(db.products).insertOnConflictUpdate(p.toCompanion());
+      }
+      await db.setSyncCursor('products', res.nextCursor);
+    });
+  }
+}
+```
+
+### Pemicu sync
+
+```dart
+// 1) Saat koneksi kembali
+Connectivity().onConnectivityChanged.listen((r) {
+  if (!r.contains(ConnectivityResult.none)) syncService.sync();
+});
+// 2) Periodik di background (workmanager) — minimum 15 menit di Android
+Workmanager().registerPeriodicTask('sync', 'syncTask',
+    frequency: const Duration(minutes: 15),
+    constraints: Constraints(networkType: NetworkType.connected),
+    backoffPolicy: BackoffPolicy.exponential);
+// 3) Saat app resume & setelah transaksi dibuat (best effort)
+```
+
+:::caution[Version-dependent]
+`connectivity_plus` hanya mendeteksi **jenis koneksi**, bukan akses internet sungguhan. Anggap request gagal sebagai sinyal offline.
+Background execution di iOS jauh lebih terbatas daripada Android (tidak ada jaminan interval) — jangan menjanjikan sync periodik yang presisi di iOS.
+:::
+
+### Sisi server: idempotent create
+
+```sql
+-- PostgreSQL: insert sekali, request ulang tidak membuat duplikat
+INSERT INTO orders (id, outlet_id, total, created_at)
+VALUES ($1, $2, $3, $4)
+ON CONFLICT (id) DO NOTHING;
+```
+
+## Best Practices
+
+- **Satu transaksi untuk data + outbox** — mencegah kondisi data tersimpan tetapi tidak pernah disinkronkan (atau sebaliknya).
+- **ID dari client (UUID)** — alasan: referensi antar entitas saat offline dan retry aman.
+- **Server idempotent** — retry setelah timeout adalah hal normal; tanpa idempotency terjadi transaksi ganda.
+- **Push berurutan per entity** — update tidak boleh mendahului create.
+- **Bedakan error sementara vs permanen** — 5xx/timeout: retry dengan exponential backoff + jitter. 4xx validasi: hentikan retry, tandai, tampilkan ke user/supervisor.
+- **Data finansial = ledger, bukan overwrite** — stok dan saldo dicatat sebagai pergerakan (`+5`, `-2`), sehingga merge dari banyak device tetap benar.
+- **Tampilkan status sync** dan sediakan tombol "Sync sekarang" + ekspor data darurat.
+- **Migrasi schema lokal teruji** — user bisa melewatkan beberapa versi app.
+
+## Anti-Patterns
+
+- **Menyimpan "yang perlu dikirim" di memory/SharedPreferences** — hilang saat app di-kill.
+- **Menggunakan auto-increment server sebagai satu-satunya ID** — record offline tidak punya identitas.
+- **Last-write-wins untuk stok/saldo** — dua kasir menjual barang yang sama, salah satu penjualan "hilang".
+- **Mengandalkan jam device untuk konflik** — jam bisa salah/diubah user; gunakan versi server atau hybrid logical clock.
+- **Sync dua arah tanpa cursor** (tarik semua data setiap kali) — boros kuota dan baterai.
+- **Retry tanpa batas tanpa backoff** — membebani server saat outage dan menguras baterai.
+
+## Performance Considerations
+
+- Batch push (mis. 50 item per request) dan **insert batch** dalam satu transaksi saat pull — jauh lebih cepat daripada per-row.
+- Index pada kolom yang sering di-query (`synced`, `updated_at`, foreign key).
+- Pull bertahap (pagination cursor) untuk dataset besar; jalankan parsing di isolate.
+- Hindari `watch()` pada query berat tanpa filter — setiap perubahan tabel memicu re-query.
+
+## Security Considerations
+
+- **Data lokal terenkripsi** untuk data sensitif (SQLCipher / `sqlcipher_flutter_libs`), kunci di Keystore/Keychain.
+- **Server tetap otoritatif**: validasi harga, diskon, dan hak akses ulang di server; jangan percaya total yang dikirim client.
+- Token kedaluwarsa saat device lama offline → refresh token dengan aman; jangan simpan password untuk "login ulang otomatis".
+- Hapus data lokal saat logout / perangkat dicabut (remote wipe flag dari server).
+- Audit log: siapa, device mana, kapan transaksi dibuat (waktu device **dan** waktu diterima server).
+
+## Real-World Use Cases
+
+- **POS multi-outlet:** transaksi & stok offline, sync ke pusat; laporan pusat memakai waktu transaksi device + waktu diterima.
+- **Aplikasi petugas lapangan** (survei pelanggan, work order instalasi/perbaikan jaringan): form + foto disimpan lokal, upload saat ada sinyal.
+- **Inventory gudang:** stock opname offline dengan pergerakan stok sebagai ledger.
+
+## Interview Questions
+
+1. **(Fundamental)** Apa beda offline-first dan caching?
+2. **(Intermediate)** Mengapa butuh outbox table? Mengapa harus dalam satu transaksi?
+3. **(Intermediate)** Bagaimana mencegah transaksi ganda saat retry?
+4. **(Advanced)** Strategi resolusi konflik apa yang Anda pilih untuk data produk, stok, dan catatan pelanggan?
+5. **(Advanced)** Bagaimana menangani perubahan schema lokal dan versi API saat banyak device belum update?
+6. **(Advanced)** Bagaimana Anda mendesain pull sync yang efisien?
+
+## Sample Answers
+
+1. Caching: server adalah sumber kebenaran, cache hanya mempercepat dan app gagal saat offline. Offline-first: DB lokal adalah sumber kebenaran untuk UI; semua fitur inti bekerja tanpa jaringan dan sync berjalan terpisah.
+2. Outbox menyimpan perubahan yang belum terkirim secara durable dan berurutan. Harus satu transaksi agar tidak ada keadaan setengah jadi — data tersimpan tanpa catatan outbox (tidak pernah sync) atau outbox tanpa data.
+3. ID dibuat di client (UUID) dan dikirim sebagai idempotency key; server melakukan upsert/`ON CONFLICT DO NOTHING` atau menyimpan hasil request per key dan mengembalikan respons yang sama.
+4. Produk (master data dari pusat): server-wins. Stok: jangan sinkronkan "nilai akhir" — kirim pergerakan stok (ledger) sehingga server menjumlahkan semua pergerakan. Catatan pelanggan: LWW per field dengan versi server, atau tampilkan konflik ke user jika penting.
+5. Migrasi Drift dengan `schemaVersion` + test migrasi; API diberi versi dan backward-compatible; server menerima payload versi lama selama masa transisi; force update hanya untuk perubahan yang tidak bisa dihindari.
+6. Cursor monoton (change sequence/`updated_at` + id) per tabel, pagination, tombstone untuk delete (`deleted_at`), batch upsert dalam transaksi, dan hanya menarik data yang relevan untuk outlet/user tersebut.
+
+## Practical Exercises
+
+1. Buat app todo offline-first dengan Drift + outbox + server Node.js mini yang idempotent; matikan jaringan dan buktikan tidak ada duplikat setelah 10× retry.
+2. Simulasikan dua device mengubah stok yang sama secara offline; implementasikan ledger dan bandingkan dengan LWW.
+3. Tambahkan layar "Status Sinkronisasi" (jumlah pending, gagal, waktu sync terakhir).
+4. Tulis test migrasi Drift dari v1 ke v3.
+
+## Quick Reference
+
+- UI ↔ **DB lokal** saja. Sync terpisah.
+- **Data + outbox dalam satu transaksi.**
+- **UUID dari client** + **server idempotent** = retry aman.
+- Push berurutan · Pull dengan **cursor** · Delete dengan **tombstone**.
+- Konflik: master → server-wins; stok/saldo → **ledger**; lainnya → LWW per field/versi.
+- 5xx/timeout → backoff; 4xx → tandai, jangan retry selamanya.
+
+## Related Topics
+
+- [Local Database: SQLite, Drift & Hive](/flutter/local-database/)
+- [Data Synchronization & Conflict Resolution](/flutter/data-sync-conflict-resolution/)
+- [Background Processing](/flutter/background-processing/)
+- [Offline-First & Synchronization Strategy (System Design)](/system-design/concepts/offline-first-architecture/)
+- [Design an Offline-First POS Application](/interview/system-design/offline-first-pos/)
+- [Transactions & ACID](/database/transactions-acid/)

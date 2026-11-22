@@ -1,0 +1,140 @@
+---
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+import { Code, LinkCard, CardGrid } from '@astrojs/starlight/components';
+import AgentFileView from '../../components/AgentFileView.astro';
+import Mermaid from '../../components/Mermaid.astro';
+import { AGENT_DOCS, AGENT_GROUPS, agentDoc } from '../../data/agents.mjs';
+
+export function getStaticPaths() {
+  return [{ params: { slug: undefined } }, ...AGENT_DOCS.map((d) => ({ params: { slug: d.slug } }))];
+}
+
+const { slug } = Astro.params;
+const doc = slug ? agentDoc(slug) : undefined;
+const toWin = (p: string) => p.replaceAll('/', '\\');
+
+// ---------- detail page data
+let setup = '';
+if (doc) {
+  const copyable = doc.files.filter((f) => !f.target.startsWith('('));
+  const dirs = [...new Set(copyable.map((f) => f.target.split('/').slice(0, -1).join('/')).filter(Boolean))];
+  setup = [
+    "$kb = 'D:\\Dev\\Projects\\software-engineer-docs'   # lokasi knowledge base ini",
+    "$p  = 'D:\\Dev\\Projects\\<nama-project>'            # project Anda",
+    ...dirs.map((d) => `New-Item -ItemType Directory -Force "$p\\${toWin(d)}" | Out-Null`),
+    ...copyable.map((f) => `Copy-Item "$kb\\${toWin(f.path)}" "$p\\${toWin(f.target)}"`),
+  ].join('\n');
+}
+const prompt = doc?.prompt ??
+  (doc ? `Read AGENTS.md and ${doc.files.filter((f) => !f.target.startsWith('(')).map((f) => f.target).join(', ')}. ` +
+    'List the rules that apply to this task, propose a plan (files, approach, tests, risks), wait for my approval, ' +
+    'then implement and run every Definition of Done command. Report what passed and what was not verified.' : '');
+
+const headings = doc
+  ? [
+      { depth: 2, slug: 'kapan', text: 'Kapan & di mana dipakai' },
+      { depth: 2, slug: 'setup', text: 'Contoh setup di project' },
+      ...doc.files.map((f, i) => ({ depth: 2, slug: `file-${i}`, text: f.label })),
+      { depth: 2, slug: 'terkait', text: 'Instruksi terkait' },
+    ]
+  : [
+      { depth: 2, slug: 'tujuan', text: 'Tujuan' },
+      { depth: 2, slug: 'cara-kerja', text: 'Cara kerja' },
+      { depth: 2, slug: 'mulai', text: 'Mulai dalam 5 langkah' },
+      ...Object.entries(AGENT_GROUPS).map(([g, label]) => ({ depth: 2, slug: `g-${g}`, text: label })),
+    ];
+
+const frontmatter = doc
+  ? { title: doc.title, description: doc.summary, trackable: false, updated: new Date('2026-11-12') }
+  : { title: 'AI Agent Instructions', description: 'Rule library AGENTS.md siap pakai agar AI coding agent membangun project sesuai best practice dan konvensi Anda.', trackable: false };
+---
+
+<StarlightPage frontmatter={frontmatter} headings={headings}>
+  {doc ? (
+    <>
+      <p>{doc.summary}</p>
+
+      <h2 id="kapan">Kapan &amp; di mana dipakai</h2>
+      <ul>
+        {doc.when.map((w) => <li>{w}</li>)}
+        <li>Lokasi di project Anda: {doc.files.filter((f) => !f.target.startsWith('(')).map((f, i) => <>{i > 0 && ', '}<code>{f.target}</code></>)}</li>
+      </ul>
+      {doc.routingRow && (
+        <>
+          <p>Tambahkan baris ini ke tabel <em>Rule Routing</em> di root <code>AGENTS.md</code> project agar agent hanya memuat file ini saat relevan:</p>
+          <Code code={`| Task touches | Read |\n| --- | --- |\n${doc.routingRow}`} lang="md" />
+        </>
+      )}
+
+      <h2 id="setup">Contoh setup di project</h2>
+      <p>Salin file dari knowledge base ini ke project Anda (PowerShell). Atau unduh per file dengan tombol <strong>Download .md</strong> di bawah, atau seluruh paket lewat <a href="/agent-files/agents-kit.zip" download>agents-kit.zip</a>.</p>
+      <Code code={setup} lang="powershell" title="setup.ps1" />
+      <p>Prompt pertama untuk menguji bahwa agent membaca aturan:</p>
+      <Code code={prompt} lang="text" title="prompt" wrap />
+
+      {doc.files.map((f, i) => (
+        <>
+          <h2 id={`file-${i}`}>{f.label}</h2>
+          <AgentFileView path={f.path} label={f.label} target={f.target} id={`file-${i}`} />
+        </>
+      ))}
+
+      <h2 id="terkait">Instruksi terkait</h2>
+      <CardGrid>
+        {doc.related.map((r) => agentDoc(r)).filter(Boolean).map((r) => (
+          <LinkCard title={r!.title} description={r!.summary} href={`/agent-instructions/${r!.slug}/`} />
+        ))}
+      </CardGrid>
+      <p>Materi belajar terkait: <a href="/ai-engineering/guides/agents-md-fundamentals/">AGENTS.md: Konsep &amp; Cara Menulis</a> · <a href="/ai-engineering/guides/ai-coding-workflow/">AI Coding Workflow</a>.</p>
+    </>
+  ) : (
+    <>
+      <h2 id="tujuan">Tujuan</h2>
+      <p>
+        Bagian ini berisi <strong>aturan yang bisa langsung dipakai AI coding agent</strong> (Claude Code, Claude, OpenAI Codex,
+        GitHub Copilot, dan agent lain yang membaca instruksi Markdown di project). Tujuannya: saat Anda meminta agent membuat
+        atau mengubah fitur, hasilnya <strong>mengikuti best practice dan konvensi Anda sendiri</strong> — struktur folder,
+        arsitektur, keamanan, testing, dan Definition of Done — tanpa harus mengulang instruksi di setiap prompt.
+      </p>
+      <p>
+        Pemisahannya jelas: halaman materi (menu 01–11) <em>menjelaskan konsep dan alasan</em> untuk Anda belajar;
+        file <code>AGENTS.md</code> di sini adalah <em>aturan yang ditegakkan</em> untuk agent. Isi file ditulis dalam bahasa Inggris
+        agar portabel untuk tim dan konsisten dipahami oleh semua tool.
+      </p>
+      <p><a href="/agent-files/agents-kit.zip" download><strong>⬇ Download agents-kit.zip</strong></a> — seluruh rule library dengan tata letak siap salin ke project.</p>
+
+      <h2 id="cara-kerja">Cara kerja</h2>
+      <Mermaid code={`flowchart LR
+  P[Prompt tugas] --> R[Root AGENTS.md project<br/>fakta project + perintah + routing]
+  R --> G[docs/agents/global<br/>standar umum]
+  R -->|file .dart| F[flutter/AGENTS.md]
+  R -->|SQL / migrasi| D[database/AGENTS.md]
+  R -->|auth / token| S[security/AGENTS.md]
+  R -->|test| T[testing/AGENTS.md]
+  F & D & S & T --> C[Kode + test]
+  C --> DoD{Definition of Done<br/>lint · test · checklist}
+  DoD -->|gagal| C
+  DoD -->|lulus| PR[Laporan + PR untuk direview]`} caption="Agent hanya memuat aturan yang relevan dengan tugas, lalu memverifikasi dengan Definition of Done" />
+
+      <h2 id="mulai">Mulai dalam 5 langkah</h2>
+      <ol>
+        <li>Pilih template sesuai jenis project (Flutter, Android, Node.js, PostgreSQL, full-stack) — tambah overlay <em>Production-Ready</em> bila aplikasi melayani user nyata.</li>
+        <li>Salin root <code>AGENTS.md</code> dari template ke project dan isi semua <code>&lt;placeholder&gt;</code> (nama produk, stack, perintah).</li>
+        <li>Salin <a href="/agent-instructions/global/">Global</a> ke <code>docs/agents/global/AGENTS.md</code> dan file domain yang disebut template.</li>
+        <li>Tambahkan <a href="/agent-instructions/shims/">shim</a> untuk Claude Code / Copilot bila dipakai.</li>
+        <li>Pastikan CI menjalankan perintah yang sama dengan Definition of Done, lalu perbarui aturan setiap kali agent mengulang kesalahan.</li>
+      </ol>
+
+      {Object.entries(AGENT_GROUPS).map(([g, label]) => (
+        <>
+          <h2 id={`g-${g}`}>{label}</h2>
+          <CardGrid>
+            {AGENT_DOCS.filter((d) => d.group === g).map((d) => (
+              <LinkCard title={d.title} description={d.summary} href={`/agent-instructions/${d.slug}/`} />
+            ))}
+          </CardGrid>
+        </>
+      ))}
+    </>
+  )}
+</StarlightPage>

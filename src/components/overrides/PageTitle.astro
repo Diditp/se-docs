@@ -1,0 +1,147 @@
+---
+// Override Starlight PageTitle: breadcrumb + judul + badge level/status + action bar.
+import { DOMAINS } from '../../data/catalog.mjs';
+
+const route = Astro.locals.starlightRoute;
+const { entry } = route;
+const data = entry.data as typeof entry.data & {
+  level?: string; status?: string; version?: string; updated?: Date; trackable?: boolean;
+};
+const id = entry.id.replace(/\/index$/, '') || 'index';
+const parts = id === 'index' ? [] : id.split('/');
+
+// Breadcrumb dari katalog
+const crumbs: { label: string; href?: string }[] = [{ label: 'Home', href: '/' }];
+const domain = DOMAINS.find((d) => d.dir === parts[0]);
+if (domain) {
+  crumbs.push({ label: `${domain.num} ${domain.short}`, href: parts.length > 1 ? `/${domain.dir}/` : undefined });
+  const group = domain.groups?.find((g) => g.dir === parts[1]);
+  if (group && parts.length > 2) crumbs.push({ label: group.label });
+} else if (parts[0] === 'learning') {
+  crumbs.push({ label: 'Learning Center' });
+} else if (parts[0] === 'agent-instructions') {
+  crumbs.push({ label: 'AI Agent Instructions', href: parts.length > 1 ? '/agent-instructions/' : undefined });
+}
+if (parts.length > 1 || (parts.length === 1 && !domain && parts[0] !== 'agent-instructions')) crumbs.push({ label: data.title });
+
+const levelLabel: Record<string, string> = { beginner: 'Beginner', intermediate: 'Intermediate', advanced: 'Advanced' };
+const statusLabel: Record<string, string> = { complete: 'Lengkap', draft: 'Draft', stub: 'Belum ditulis' };
+const trackable = data.trackable !== false && id !== 'index';
+const fmt = (d: Date) => d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' });
+---
+
+{crumbs.length > 1 && (
+  <nav class="crumbs" aria-label="Breadcrumb">
+    <ol>
+      {crumbs.map((c, i) => (
+        <li>
+          {c.href && i < crumbs.length - 1 ? <a href={c.href}>{c.label}</a> : <span aria-current={i === crumbs.length - 1 ? 'page' : undefined}>{c.label}</span>}
+        </li>
+      ))}
+    </ol>
+  </nav>
+)}
+
+<h1 id="_top">{data.title}</h1>
+
+{(data.level || data.status || data.version || data.updated) && (
+  <div class="meta">
+    {data.level && <span class={`pill lvl-${data.level}`}>{levelLabel[data.level]}</span>}
+    {data.status && <span class={`pill st-${data.status}`}>{statusLabel[data.status]}</span>}
+    {data.version && <span class="pill ver" title="Materi bergantung pada versi">Versi: {data.version}</span>}
+    {data.updated && <span class="upd">Diperbarui {fmt(data.updated)}</span>}
+  </div>
+)}
+
+{trackable && (
+  <div class="actions" data-page-actions data-title={data.title}>
+    <button type="button" data-act="learned" aria-pressed="false">
+      <span class="on">✓ Sudah dipelajari</span><span class="off">○ Tandai dipelajari</span>
+    </button>
+    <button type="button" data-act="bookmark" aria-pressed="false">
+      <span class="on">★ Di-bookmark</span><span class="off">☆ Bookmark</span>
+    </button>
+    <button type="button" data-act="weak" aria-pressed="false" title="Masukkan ke daftar topik lemah untuk diulang">
+      <span class="on">⚑ Topik lemah</span><span class="off">⚐ Tandai lemah</span>
+    </button>
+  </div>
+)}
+
+<script>
+  import { load, update, slugFromPath, logActivity } from '../../scripts/store';
+
+  function init() {
+    const bar = document.querySelector<HTMLElement>('[data-page-actions]');
+    const slug = slugFromPath();
+    const title = bar?.dataset.title ?? document.title;
+
+    // catat kunjungan (untuk Continue Learning)
+    if (slug && bar) {
+      update((d) => {
+        d.visits = [{ slug, title, ts: Date.now() }, ...d.visits.filter((v) => v.slug !== slug)].slice(0, 30);
+      });
+    }
+    if (!bar) return;
+
+    const render = () => {
+      const d = load();
+      const state: Record<string, boolean> = {
+        learned: !!d.learned[slug],
+        bookmark: !!d.bookmarks[slug],
+        weak: (d.weak[slug] ?? 0) > 0,
+      };
+      bar.querySelectorAll<HTMLButtonElement>('button[data-act]').forEach((b) => {
+        b.setAttribute('aria-pressed', String(state[b.dataset.act!]));
+      });
+    };
+
+    bar.addEventListener('click', (e) => {
+      const btn = (e.target as HTMLElement).closest<HTMLButtonElement>('button[data-act]');
+      if (!btn) return;
+      update((d) => {
+        const act = btn.dataset.act;
+        if (act === 'learned') {
+          if (d.learned[slug]) delete d.learned[slug];
+          else { d.learned[slug] = Date.now(); logActivity(d); }
+        } else if (act === 'bookmark') {
+          if (d.bookmarks[slug]) delete d.bookmarks[slug];
+          else d.bookmarks[slug] = { title, ts: Date.now() };
+        } else if (act === 'weak') {
+          if (d.weak[slug]) delete d.weak[slug];
+          else d.weak[slug] = 1;
+        }
+      });
+      render();
+    });
+    window.addEventListener('sekb:change', render);
+    render();
+  }
+  init();
+</script>
+
+<style>
+  .crumbs ol { display: flex; flex-wrap: wrap; gap: 0.25rem; list-style: none; padding: 0; margin: 0 0 0.25rem; font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  .crumbs li + li::before { content: '/'; margin-inline-end: 0.25rem; opacity: 0.6; }
+  .crumbs a { color: var(--sl-color-gray-2); text-decoration: none; }
+  .crumbs a:hover { color: var(--sl-color-accent-high); text-decoration: underline; }
+  h1 { margin-top: 0.5rem; font-size: var(--sl-text-h1); line-height: var(--sl-line-height-headings); font-weight: 600; color: var(--sl-color-white); }
+  .meta { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; margin-top: 0.75rem; font-size: var(--sl-text-xs); }
+  .pill { padding: 0.1rem 0.55rem; border-radius: 999px; border: 1px solid var(--sl-color-gray-5); color: var(--sl-color-gray-2); }
+  .lvl-beginner { border-color: var(--sl-color-green); color: var(--sl-color-green-high); }
+  .lvl-intermediate { border-color: var(--sl-color-blue); color: var(--sl-color-blue-high); }
+  .lvl-advanced { border-color: var(--sl-color-purple); color: var(--sl-color-purple-high); }
+  .st-complete { background: var(--sl-color-green-low); border-color: transparent; color: var(--sl-color-green-high); }
+  .st-stub { background: var(--sl-color-gray-6); border-style: dashed; }
+  .st-draft { background: var(--sl-color-orange-low); border-color: transparent; color: var(--sl-color-orange-high); }
+  .upd { color: var(--sl-color-gray-3); }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 1rem; }
+  .actions button {
+    font: inherit; font-size: var(--sl-text-sm); cursor: pointer; padding: 0.35rem 0.75rem; border-radius: 0.5rem;
+    border: 1px solid var(--sl-color-gray-5); background: transparent; color: var(--sl-color-gray-2);
+  }
+  .actions button:hover { border-color: var(--sl-color-accent); color: var(--sl-color-white); }
+  .actions button[aria-pressed='true'] { background: var(--sl-color-accent-low); border-color: var(--sl-color-accent); color: var(--sl-color-accent-high); }
+  .actions button .on { display: none; }
+  .actions button[aria-pressed='true'] .on { display: inline; }
+  .actions button[aria-pressed='true'] .off { display: none; }
+</style>

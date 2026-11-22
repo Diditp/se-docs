@@ -1,0 +1,246 @@
+---
+import { getCollection } from 'astro:content';
+import { Icon } from '@astrojs/starlight/components';
+import { DOMAINS, allTopics } from '../data/catalog.mjs';
+import questions from '../data/questions.json';
+
+const topics = allTopics();
+const docs = await getCollection('docs');
+const written = docs.filter((e) => (e.data as any).status && (e.data as any).status !== 'stub');
+const recent = written
+  .filter((e) => (e.data as any).updated)
+  .sort((a, b) => +(b.data as any).updated - +(a.data as any).updated)
+  .slice(0, 6);
+
+const domainSlugs = Object.fromEntries(
+  DOMAINS.map((d) => [d.id, topics.filter((t) => t.domain === d.id).map((t) => t.slug)]),
+);
+const titles = Object.fromEntries(topics.map((t) => [t.slug, t.title]));
+const qMini = questions.map((q: any) => ({ id: q.id, q: q.q, a: q.a, topic: q.topic }));
+const fmt = (d: Date) => d.toLocaleDateString('id-ID', { day: 'numeric', month: 'short' });
+---
+
+<div class="dash not-content" id="dash"
+  data-domains={JSON.stringify(domainSlugs)}
+  data-titles={JSON.stringify(titles)}
+  data-qs={JSON.stringify(qMini)}
+  data-total={topics.length}>
+
+  <!-- Stats -->
+  <section class="stats">
+    <div class="stat"><span class="k">Progress total</span><span class="v" data-s="pct">0%</span><span class="sub" data-s="pctsub">0 / {topics.length} topik</span></div>
+    <div class="stat"><span class="k">Streak belajar</span><span class="v" data-s="streak">0</span><span class="sub">hari berturut-turut</span></div>
+    <div class="stat"><span class="k">Kartu perlu review</span><span class="v" data-s="due">{questions.length}</span><span class="sub"><a href="/learning/review/">Mulai review →</a></span></div>
+    <div class="stat"><span class="k">Materi tersedia</span><span class="v">{written.length}</span><span class="sub">halaman lengkap / draft</span></div>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <h2><Icon name="open-book" size="1.1rem" /> Continue Learning</h2>
+      <ul class="list" data-l="visits"><li class="empty">Belum ada riwayat. Mulai dari <a href="/learning/roadmap/">Roadmap</a>.</li></ul>
+    </section>
+    <section class="card">
+      <h2><Icon name="list-format" size="1.1rem" /> Weekly Learning Progress</h2>
+      <div class="week" data-l="week"></div>
+      <p class="hint" data-s="weeksum">0 aktivitas minggu ini</p>
+    </section>
+  </div>
+
+  <section>
+    <h2 class="sec">Core Skills</h2>
+    <div class="domains">
+      {DOMAINS.map((d) => (
+        <a class="dom" href={`/${d.dir}/`} data-dom={d.id}>
+          <div class="dh"><Icon name={d.icon as any} size="1.25rem" /><span class="num">{d.num}</span>{d.core && <span class="core">core</span>}</div>
+          <strong>{d.short}</strong>
+          <span class="desc">{d.description}</span>
+          <div class="bar"><span style="width:0%"></span></div>
+          <span class="cnt">0 / {domainSlugs[d.id].length}</span>
+        </a>
+      ))}
+    </div>
+  </section>
+
+  <section class="card interview">
+    <h2><Icon name="star" size="1.1rem" /> Interview Preparation</h2>
+    <div class="ilinks">
+      <a href="/interview/company-prep/overview/">Company Interview Prep</a>
+      <a href="/learning/interview-simulator/">Interview Simulator</a>
+      <a href="/learning/quiz/">Quiz</a>
+      <a href="/learning/flashcards/">Flashcards</a>
+      <a href="/interview/coding-test/problem-solving-framework/">Coding Test</a>
+      <a href="/interview/behavioral/star-method/">Behavioral (STAR)</a>
+    </div>
+    <div class="rq">
+      <div class="rqh"><span>Random interview question</span><button type="button" data-act="nextq">Acak lagi ↻</button></div>
+      <p class="q" data-rq="q"></p>
+      <details><summary>Lihat sample answer</summary><p data-rq="a"></p><p class="hint" data-rq="t"></p></details>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="card">
+      <h2><Icon name="document" size="1.1rem" /> Recently Updated</h2>
+      <ul class="list">
+        {recent.map((e) => (
+          <li><a href={`/${e.id}/`}>{e.data.title}</a><span class="dt">{fmt((e.data as any).updated)}</span></li>
+        ))}
+      </ul>
+    </section>
+    <section class="card">
+      <h2><Icon name="star" size="1.1rem" /> Bookmarked</h2>
+      <ul class="list" data-l="bookmarks"><li class="empty">Belum ada bookmark. Klik ☆ Bookmark di halaman materi.</li></ul>
+    </section>
+  </div>
+
+  <section class="card">
+    <h2><Icon name="warning" size="1.1rem" /> Weak Topics — prioritas ulang</h2>
+    <ul class="list" data-l="weak"><li class="empty">Tidak ada topik lemah. Tandai lewat tombol ⚐ atau jawaban salah di quiz.</li></ul>
+  </section>
+
+  <section class="backup">
+    <span>Progress tersimpan di browser ini.</span>
+    <button type="button" data-act="export">Export JSON</button>
+    <label class="btn">Import JSON<input type="file" accept="application/json" data-act="import" hidden /></label>
+  </section>
+</div>
+
+<script>
+  import { load, isDue, exportJson, importJson, dayKey, escapeHtml as esc } from '../scripts/store';
+
+  const root = document.getElementById('dash')!;
+  const domains: Record<string, string[]> = JSON.parse(root.dataset.domains!);
+  const titles: Record<string, string> = JSON.parse(root.dataset.titles!);
+  const qs: { id: string; q: string; a: string; topic: string }[] = JSON.parse(root.dataset.qs!);
+  const total = Number(root.dataset.total);
+  const $ = (s: string) => root.querySelector<HTMLElement>(s)!;
+
+  function streak(activity: Record<string, number>) {
+    let n = 0;
+    const t = new Date();
+    if (!activity[dayKey(+t)]) t.setDate(t.getDate() - 1); // hari ini belum aktif → hitung dari kemarin
+    while (activity[dayKey(+t)]) { n++; t.setDate(t.getDate() - 1); }
+    return n;
+  }
+
+  function render() {
+    const d = load();
+    const learned = Object.keys(d.learned).filter((s) => titles[s]);
+    const pct = (learned.length / total) * 100;
+    $('[data-s=pct]').textContent = `${pct > 0 && pct < 10 ? pct.toFixed(1) : Math.round(pct)}%`;
+    $('[data-s=pctsub]').textContent = `${learned.length} / ${total} topik`;
+    $('[data-s=streak]').textContent = String(streak(d.activity));
+    $('[data-s=due]').textContent = String(qs.filter((q) => isDue(d, q.id)).length);
+
+    // Visits
+    const visits = d.visits.slice(0, 6);
+    if (visits.length) $('[data-l=visits]').innerHTML = visits
+      .map((v) => `<li><a href="/${esc(v.slug)}/">${esc(v.title)}</a><span class="dt">${d.learned[v.slug] ? '✓' : ''}</span></li>`).join('');
+
+    // Week
+    const days: string[] = [];
+    let sum = 0, max = 1;
+    for (let i = 6; i >= 0; i--) { const t = new Date(); t.setDate(t.getDate() - i); days.push(dayKey(+t)); }
+    days.forEach((k) => { sum += d.activity[k] ?? 0; max = Math.max(max, d.activity[k] ?? 0); });
+    $('[data-l=week]').innerHTML = days.map((k) => {
+      const v = d.activity[k] ?? 0;
+      const label = new Date(k + 'T00:00').toLocaleDateString('id-ID', { weekday: 'short' });
+      return `<div class="col" title="${k}: ${v} aktivitas"><span class="b" style="height:${Math.max(4, (v / max) * 100)}%;${v ? '' : 'opacity:.25'}"></span><span class="lbl">${label}</span></div>`;
+    }).join('');
+    $('[data-s=weeksum]').textContent = `${sum} aktivitas minggu ini (topik selesai, kartu dijawab, self-assessment)`;
+
+    // Domains
+    root.querySelectorAll<HTMLElement>('[data-dom]').forEach((el) => {
+      const s = domains[el.dataset.dom!];
+      const n = s.filter((x) => d.learned[x]).length;
+      (el.querySelector('.bar span') as HTMLElement).style.width = `${(n / s.length) * 100}%`;
+      el.querySelector('.cnt')!.textContent = `${n} / ${s.length}`;
+    });
+
+    // Bookmarks
+    const bm = Object.entries(d.bookmarks).sort((a, b) => b[1].ts - a[1].ts).slice(0, 8);
+    if (bm.length) $('[data-l=bookmarks]').innerHTML = bm.map(([s, b]) => `<li><a href="/${esc(s)}/">${esc(b.title)}</a></li>`).join('');
+
+    // Weak
+    const wk = Object.entries(d.weak).sort((a, b) => b[1] - a[1]).slice(0, 8);
+    if (wk.length) $('[data-l=weak]').innerHTML = wk.map(([s, n]) =>
+      `<li><a href="/${esc(s)}/">${esc(titles[s] ?? s)}</a><span class="dt">skor ${n}</span></li>`).join('');
+  }
+
+  function randomQ() {
+    const d = load();
+    // Prioritaskan pertanyaan dari topik lemah
+    const weakQs = qs.filter((q) => d.weak[q.topic]);
+    const pool = weakQs.length && Math.random() < 0.6 ? weakQs : qs;
+    const q = pool[Math.floor(Math.random() * pool.length)];
+    $('[data-rq=q]').textContent = q.q;
+    $('[data-rq=a]').textContent = q.a;
+    $('[data-rq=t]').innerHTML = `Topik: <a href="/${esc(q.topic)}/">${esc(titles[q.topic] ?? q.topic)}</a>`;
+    (root.querySelector('.rq details') as HTMLDetailsElement).open = false;
+  }
+
+  root.addEventListener('click', (e) => {
+    const t = (e.target as HTMLElement).closest<HTMLElement>('[data-act]');
+    if (t?.dataset.act === 'nextq') randomQ();
+    if (t?.dataset.act === 'export') exportJson();
+  });
+  root.querySelector<HTMLInputElement>('[data-act=import]')!.addEventListener('change', async (e) => {
+    const f = (e.target as HTMLInputElement).files?.[0];
+    if (!f) return;
+    try { await importJson(f); render(); } catch (err) { console.error(err); }
+  });
+
+  render();
+  randomQ();
+</script>
+
+<style>
+  .dash { display: flex; flex-direction: column; gap: 1.5rem; }
+  .dash h2 { display: flex; align-items: center; gap: 0.4rem; font-size: var(--sl-text-lg); margin: 0 0 0.75rem; color: var(--sl-color-white); }
+  .sec { margin-bottom: 0.75rem !important; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 0.75rem; }
+  .stat, .card { border: 1px solid var(--sl-color-gray-5); border-radius: 0.75rem; padding: 1rem; background: var(--sl-color-bg-nav); }
+  .stat { display: flex; flex-direction: column; gap: 0.15rem; }
+  .k { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); text-transform: uppercase; letter-spacing: 0.04em; }
+  .v { font-size: 1.75rem; font-weight: 700; color: var(--sl-color-white); line-height: 1.2; }
+  .sub, .hint { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); margin: 0; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; }
+  .list { list-style: none; padding: 0; margin: 0; font-size: var(--sl-text-sm); }
+  .list :global(li) { display: flex; justify-content: space-between; gap: 0.5rem; padding: 0.35rem 0; border-bottom: 1px solid var(--sl-color-gray-6); }
+  .list :global(li:last-child) { border-bottom: 0; }
+  .list :global(a) { color: var(--sl-color-white); text-decoration: none; }
+  .list :global(a:hover) { color: var(--sl-color-accent-high); text-decoration: underline; }
+  .list :global(.dt) { color: var(--sl-color-gray-3); font-size: var(--sl-text-xs); white-space: nowrap; }
+  .list :global(.empty) { color: var(--sl-color-gray-3); display: block; }
+  .list :global(.empty a) { color: var(--sl-color-accent-high); }
+  .week { display: flex; align-items: flex-end; gap: 0.4rem; height: 110px; }
+  .week :global(.col) { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; gap: 0.25rem; }
+  .week :global(.b) { width: 100%; max-width: 28px; background: var(--sl-color-accent); border-radius: 4px 4px 0 0; }
+  .week :global(.lbl) { font-size: 0.7rem; color: var(--sl-color-gray-3); }
+  .domains { display: grid; grid-template-columns: repeat(auto-fill, minmax(13rem, 1fr)); gap: 0.75rem; }
+  .dom { display: flex; flex-direction: column; gap: 0.3rem; padding: 0.9rem; border: 1px solid var(--sl-color-gray-5); border-radius: 0.75rem; text-decoration: none; color: inherit; background: var(--sl-color-bg-nav); transition: border-color 0.15s, transform 0.15s; }
+  .dom:hover { border-color: var(--sl-color-accent); transform: translateY(-1px); }
+  .dh { display: flex; align-items: center; gap: 0.4rem; color: var(--sl-color-accent-high); }
+  .num { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  .core { margin-inline-start: auto; font-size: 0.65rem; padding: 0 0.4rem; border-radius: 99px; background: var(--sl-color-accent-low); color: var(--sl-color-accent-high); }
+  .dom strong { color: var(--sl-color-white); font-size: var(--sl-text-sm); }
+  .desc { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); line-height: 1.4; flex: 1; }
+  .bar { height: 5px; border-radius: 99px; background: var(--sl-color-gray-6); overflow: hidden; margin-top: 0.3rem; }
+  .bar span { display: block; height: 100%; background: var(--sl-color-accent); }
+  .cnt { font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  .ilinks { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
+  .ilinks a { font-size: var(--sl-text-sm); padding: 0.3rem 0.75rem; border-radius: 99px; border: 1px solid var(--sl-color-gray-5); color: var(--sl-color-white); text-decoration: none; }
+  .ilinks a:hover { border-color: var(--sl-color-accent); background: var(--sl-color-accent-low); }
+  .rq { border-top: 1px solid var(--sl-color-gray-6); padding-top: 0.75rem; }
+  .rqh { display: flex; justify-content: space-between; align-items: center; font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); text-transform: uppercase; letter-spacing: 0.04em; }
+  .q { font-weight: 600; color: var(--sl-color-white); margin: 0.5rem 0; }
+  details { font-size: var(--sl-text-sm); color: var(--sl-color-gray-2); }
+  summary { cursor: pointer; color: var(--sl-color-accent-high); }
+  button, .btn { font: inherit; font-size: var(--sl-text-xs); cursor: pointer; padding: 0.3rem 0.7rem; border-radius: 0.5rem; border: 1px solid var(--sl-color-gray-5); background: transparent; color: var(--sl-color-gray-2); }
+  button:hover, .btn:hover { border-color: var(--sl-color-accent); color: var(--sl-color-white); }
+  .backup { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; font-size: var(--sl-text-xs); color: var(--sl-color-gray-3); }
+  @media (max-width: 50rem) {
+    .stats { grid-template-columns: repeat(2, 1fr); }
+    .grid2 { grid-template-columns: 1fr; }
+  }
+</style>
